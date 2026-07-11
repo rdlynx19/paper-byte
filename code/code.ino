@@ -295,21 +295,35 @@ static void show_msg(const char *line1, const char *line2 = nullptr) {
     display.showPage(framebuf, true);
 }
 
-// Cover thumbnail occupies a fixed strip on the left; everything else
-// (header, list, progress, footer) starts to the right of it.
-static const int COVER_GAP = 20;
-static const int TEXT_X    = COVER_THUMB_W + COVER_GAP;
+// Library is a grid of book tiles (cover + title), GRID_COLS x GRID_ROWS per
+// page, paginated by g_sel_epub / TILES_PER_PAGE — the same "page jumps when
+// the cursor crosses its boundary" behaviour the old scrolling list had.
+static const int GRID_COLS      = 2;
+static const int GRID_ROWS      = 4;
+static const int TILES_PER_PAGE = GRID_COLS * GRID_ROWS;
+static const int TITLE_GAP      = 6; // space between a cover's bottom edge and its title line
 
 // Fetches (decoding + SD-caching as needed) and draws the cover for the book
-// at `epub_idx`. A throwaway Epub instance is enough — we only need its
-// title/cover metadata, not a full spine/TOC parse for reading.
-static void render_cover_thumbnail(int epub_idx) {
+// at `epub_idx` at (x, y), and refreshes its stored title from the epub's
+// own metadata (scan_for_epubs() only ever seeds it from the filename). A
+// throwaway Epub instance is enough — we only need its title/cover metadata,
+// not a full spine/TOC parse for reading.
+static void render_cover_thumbnail(int epub_idx, int x, int y) {
     static uint8_t cover_buf[COVER_THUMB_BYTES];
     if (epub_idx < 0 || epub_idx >= g_state.num_epubs) return;
 
-    Epub cover_epub(g_state.epub_list[epub_idx].path);
-    if (cover_epub.load() && get_cover_thumbnail(&cover_epub, cover_buf))
-        g_rend->draw_bitmap_1bpp(0, 0, cover_buf, COVER_THUMB_W, COVER_THUMB_H);
+    EpubListItem &it = g_state.epub_list[epub_idx];
+    Epub cover_epub(it.path);
+    if (!cover_epub.load()) return;
+
+    const std::string &title = cover_epub.get_title();
+    if (!title.empty()) {
+        strncpy(it.title, title.c_str(), MAX_TITLE_SIZE - 1);
+        it.title[MAX_TITLE_SIZE - 1] = '\0';
+    }
+
+    if (get_cover_thumbnail(&cover_epub, cover_buf))
+        g_rend->draw_bitmap_1bpp(x, y, cover_buf, COVER_THUMB_W, COVER_THUMB_H);
 }
 
 static void render_library() {
@@ -318,43 +332,55 @@ static void render_library() {
     int y = 0;
 
     // Header
-    char hdr[32];
-    snprintf(hdr, sizeof(hdr), "LIBRARY  (%d books)", g_state.num_epubs);
-    g_rend->draw_text(TEXT_X, y, hdr, true);
+    char hdr[48];
+    snprintf(hdr, sizeof(hdr), "Pushkar's Library - %d books", g_state.num_epubs);
+    g_rend->draw_text(0, y, hdr, true);
     y += lh + lh / 2;
+    const int grid_top = y;
 
     if (g_state.num_epubs == 0) {
-        g_rend->draw_text(TEXT_X, y, "No books found.");  y += lh;
-        g_rend->draw_text(TEXT_X, y, "Copy .epub files to /epub on SD card.");
+        g_rend->draw_text(0, y, "No books found.");  y += lh;
+        g_rend->draw_text(0, y, "Copy .epub files to /epub on SD card.");
         display.showPage(framebuf, true);
         return;
     }
 
-    render_cover_thumbnail(g_sel_epub);
+    const int tile_w = g_rend->get_page_width() / GRID_COLS;
+    // Content-sized, not stretched to fill the available grid height — the
+    // panel's logical canvas is portrait (rotated 90 degrees), so it has far
+    // more vertical room than a 2-row grid needs; stretching tiles to fill it
+    // just opens a big gap between rows instead of showing more books.
+    const int tile_h = COVER_THUMB_H + TITLE_GAP + lh;
+    const int max_title_chars = max(4, tile_w / g_rend->get_space_width() - 1);
 
-    // How many items fit between header and the two footer lines
-    const int footer_lines = 2;
-    const int avail = g_rend->get_page_height() - y - lh * footer_lines;
-    const int max_vis = avail / lh;
+    int page  = g_sel_epub / TILES_PER_PAGE;
+    int first = page * TILES_PER_PAGE;
 
-    // Scroll to keep g_sel_epub visible
-    int scroll = g_sel_epub - max_vis / 2;
-    if (scroll < 0) scroll = 0;
-    if (scroll > g_state.num_epubs - max_vis) scroll = max(0, g_state.num_epubs - max_vis);
+    for (int slot = 0; slot < TILES_PER_PAGE; slot++) {
+        int idx = first + slot;
+        if (idx >= g_state.num_epubs) break;
 
-    for (int i = scroll; i < g_state.num_epubs && y + lh <= g_rend->get_page_height() - lh * footer_lines; i++) {
-        const EpubListItem &it = g_state.epub_list[i];
-        bool sel = (i == g_sel_epub);
+        int col = slot % GRID_COLS;
+        int row = slot / GRID_COLS;
+        int tile_x = col * tile_w;
+        int tile_y = grid_top + row * tile_h;
+        int cover_x = tile_x + (tile_w - COVER_THUMB_W) / 2;
 
-        // Truncate title to 32 chars; prepend cursor
-        char title[33];
-        strncpy(title, it.title, 32);
-        title[32] = '\0';
+        render_cover_thumbnail(idx, cover_x, tile_y);
 
-        char line[40];
-        snprintf(line, sizeof(line), "%s %s", sel ? ">" : " ", title);
-        g_rend->draw_text(TEXT_X, y, line, sel);
-        y += lh;
+        if (idx == g_sel_epub)
+            g_rend->draw_rect(cover_x - 4, tile_y - 4, COVER_THUMB_W + 8, COVER_THUMB_H + 8, 1);
+
+        const EpubListItem &it = g_state.epub_list[idx];
+        char title[48];
+        int  n = (int)strlen(it.title);
+        if (n > max_title_chars) n = max_title_chars;
+        strncpy(title, it.title, n);
+        title[n] = '\0';
+        // Not bold: get_space_width() below (used for centering) is always
+        // Font20's width, which would under-measure a bold (Font24) title.
+        g_rend->draw_text(tile_x + (tile_w - (int)strlen(title) * g_rend->get_space_width()) / 2,
+                          tile_y + COVER_THUMB_H + TITLE_GAP, title);
     }
 
     // Progress for currently selected book
@@ -367,10 +393,10 @@ static void render_library() {
                  sel.pages_in_current_section);
     else
         strncpy(prog, "  (not yet opened)", sizeof(prog) - 1);
-    g_rend->draw_text(TEXT_X, g_rend->get_page_height() - lh * 2, prog);
+    g_rend->draw_text(0, g_rend->get_page_height() - lh * 2, prog);
 
     // Button hint
-    g_rend->draw_text(TEXT_X, g_rend->get_page_height() - lh, "PREV/NEXT: navigate   SELECT: open");
+    g_rend->draw_text(0, g_rend->get_page_height() - lh, "PREV/NEXT: navigate   SELECT: open");
     display.showPage(framebuf, true);
 }
 

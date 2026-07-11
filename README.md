@@ -22,3 +22,6 @@ TODO:
     []Check if device runs over battery
 
     []Add way of adding/removing files from SD card over network
+
+    []How to do a full reload? When new files are added to the SD?
+    

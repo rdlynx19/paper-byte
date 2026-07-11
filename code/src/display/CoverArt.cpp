@@ -1,6 +1,7 @@
 #include "CoverArt.h"
 #include "../epub/Epub.h"
 #include <JPEGDEC.h>
+#include <PNGdec.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -87,7 +88,11 @@ static void dither_to_1bpp(uint8_t *gray, int w, int h, uint8_t *out) {
 }
 
 static bool decode_jpeg_cover(const uint8_t *jpg, size_t jpg_size, uint8_t *out_1bpp) {
-    JPEGDEC jpeg;
+    // JPEGDEC's internal JPEGIMAGE struct holds its Huffman/quantization
+    // tables and MCU buffers inline (tens of KB) — as a plain stack local
+    // that blows the loop task's stack. static keeps it out of the stack
+    // entirely; decode calls are never concurrent/re-entrant here.
+    static JPEGDEC jpeg;
     if (!jpeg.openRAM((uint8_t *)jpg, (int)jpg_size, jpeg_draw_callback)) {
         ESP_LOGE(TAG, "Not a JPEG or corrupt cover image");
         return false;
@@ -116,6 +121,11 @@ static bool decode_jpeg_cover(const uint8_t *jpg, size_t jpg_size, uint8_t *out_
         jpeg.close();
         return false;
     }
+    // ps_malloc doesn't zero memory, and MCU block rounding at odd image
+    // sizes/scale factors can leave a sliver of this buffer undrawn by the
+    // callback below — without this, that sliver is leftover PSRAM garbage,
+    // which dithers into visible noise. White is a neutral fill for it.
+    memset(ctx.gray, 255, (size_t)dw * dh);
     jpeg.setUserPointer(&ctx);
 
     bool ok = jpeg.decode(0, 0, scale) != 0;
@@ -140,6 +150,108 @@ static bool decode_jpeg_cover(const uint8_t *jpg, size_t jpg_size, uint8_t *out_
     return true;
 }
 
+// PNGdec has no built-in downscale (unlike JPEGDEC's SCALE_HALF/QUARTER/
+// EIGHTH), and covers can be a few thousand pixels tall, so decoding a full
+// row buffer per scanline and holding the *whole* image in memory isn't an
+// option. Instead this streams: each incoming source scanline is box-
+// downsampled horizontally into `row_sum`/`row_count` (the accumulator for
+// whichever destination row it maps to), and the accumulator is finalized
+// into `thumb_gray` the moment a scanline belonging to the next destination
+// row arrives — so peak memory is one source row, not the whole source image.
+struct PngDecodeCtx {
+    PNG      *png;
+    uint16_t *rgb565_row; // scratch, [src_w]
+    uint32_t *row_sum;    // accumulator for `current_dy`, [COVER_THUMB_W]
+    int       row_count;
+    int       current_dy;
+    int       src_w, src_h;
+    uint8_t  *thumb_gray; // [COVER_THUMB_W * COVER_THUMB_H], output
+};
+
+static void finalize_png_row(PngDecodeCtx *ctx) {
+    if (ctx->current_dy < 0 || ctx->current_dy >= COVER_THUMB_H) return;
+    uint8_t *dst = ctx->thumb_gray + (size_t)ctx->current_dy * COVER_THUMB_W;
+    for (int x = 0; x < COVER_THUMB_W; x++)
+        dst[x] = ctx->row_count ? (uint8_t)(ctx->row_sum[x] / ctx->row_count) : 255;
+}
+
+static int png_draw_callback(PNGDRAW *draw) {
+    PngDecodeCtx *ctx = (PngDecodeCtx *)draw->pUser;
+    ctx->png->getLineAsRGB565(draw, ctx->rgb565_row, PNG_RGB565_LITTLE_ENDIAN, 0xFFFFFFFF);
+
+    int dy = draw->y * COVER_THUMB_H / ctx->src_h;
+    if (dy != ctx->current_dy) {
+        finalize_png_row(ctx);
+        ctx->current_dy = dy;
+        ctx->row_count  = 0;
+        memset(ctx->row_sum, 0, COVER_THUMB_W * sizeof(uint32_t));
+    }
+
+    for (int x = 0; x < COVER_THUMB_W; x++) {
+        int sx0 = x * ctx->src_w / COVER_THUMB_W, sx1 = (x + 1) * ctx->src_w / COVER_THUMB_W;
+        if (sx1 <= sx0) sx1 = sx0 + 1;
+        uint32_t sum = 0;
+        int n = 0;
+        for (int sx = sx0; sx < sx1 && sx < ctx->src_w; sx++) {
+            uint16_t px = ctx->rgb565_row[sx];
+            sum += ((px & 0x7E0) >> 5) << 2; // same green-channel luma approximation as the JPEG path
+            n++;
+        }
+        ctx->row_sum[x] += n ? sum / n : 255;
+    }
+    ctx->row_count++;
+    return 1;
+}
+
+static bool decode_png_cover(const uint8_t *data, size_t data_size, uint8_t *out_1bpp) {
+    // Same reasoning as decode_jpeg_cover's static JPEGDEC: keep PNG's
+    // internal decode state off the stack.
+    static PNG png;
+    if (png.openRAM((uint8_t *)data, (int)data_size, png_draw_callback) != PNG_SUCCESS) {
+        ESP_LOGE(TAG, "Not a PNG or corrupt cover image");
+        return false;
+    }
+
+    int src_w = png.getWidth(), src_h = png.getHeight();
+
+    uint8_t  *thumb_gray = (uint8_t  *)ps_malloc((size_t)COVER_THUMB_W * COVER_THUMB_H);
+    uint16_t *rgb565_row = (uint16_t *)ps_malloc((size_t)src_w * sizeof(uint16_t));
+    uint32_t *row_sum    = (uint32_t *)malloc(COVER_THUMB_W * sizeof(uint32_t));
+    if (!thumb_gray || !rgb565_row || !row_sum) {
+        ESP_LOGE(TAG, "OOM allocating PNG decode buffers");
+        free(thumb_gray); free(rgb565_row); free(row_sum);
+        png.close();
+        return false;
+    }
+    memset(thumb_gray, 255, (size_t)COVER_THUMB_W * COVER_THUMB_H);
+
+    PngDecodeCtx ctx;
+    ctx.png         = &png;
+    ctx.rgb565_row  = rgb565_row;
+    ctx.row_sum     = row_sum;
+    ctx.row_count   = 0;
+    ctx.current_dy  = -1;
+    ctx.src_w       = src_w;
+    ctx.src_h       = src_h;
+    ctx.thumb_gray  = thumb_gray;
+
+    bool ok = png.decode(&ctx, 0) == PNG_SUCCESS;
+    finalize_png_row(&ctx); // the last accumulated row is only flushed on the *next* dy change, which never comes
+    png.close();
+    free(rgb565_row);
+    free(row_sum);
+
+    if (!ok) {
+        ESP_LOGE(TAG, "PNG decode failed");
+        free(thumb_gray);
+        return false;
+    }
+
+    dither_to_1bpp(thumb_gray, COVER_THUMB_W, COVER_THUMB_H, out_1bpp);
+    free(thumb_gray);
+    return true;
+}
+
 // FNV-1a over the epub's own SD path — used to name its cover cache file,
 // since the path itself may be long and isn't a valid filename on its own.
 static uint32_t hash_path(const std::string &path) {
@@ -148,8 +260,12 @@ static uint32_t hash_path(const std::string &path) {
     return h;
 }
 
+// Cache format tag — bump this (cov2 -> cov3 ...) whenever the decode
+// pipeline or thumbnail size changes, so stale/corrupt cached files can never
+// be mistaken for current ones; a size check alone can't catch a same-size
+// but wrongly-decoded cache entry.
 static void cover_cache_path(const std::string &epub_path, char *out, size_t out_size) {
-    snprintf(out, out_size, "/sd/cov_%08lX.bin", (unsigned long)hash_path(epub_path));
+    snprintf(out, out_size, "/sd/cov2_%08lX.bin", (unsigned long)hash_path(epub_path));
 }
 
 bool get_cover_thumbnail(Epub *epub, uint8_t *out) {
@@ -166,13 +282,17 @@ bool get_cover_thumbnail(Epub *epub, uint8_t *out) {
     const std::string &cover_item = epub->get_cover_image_item();
     if (cover_item.empty()) return false;
 
-    size_t jpg_size = 0;
-    uint8_t *jpg = epub->get_item_contents(cover_item, &jpg_size);
-    if (!jpg) return false;
+    size_t img_size = 0;
+    uint8_t *img = epub->get_item_contents(cover_item, &img_size);
+    if (!img) return false;
 
-    bool is_jpeg = jpg_size > 2 && jpg[0] == 0xFF && jpg[1] == 0xD8;
-    bool ok = is_jpeg && decode_jpeg_cover(jpg, jpg_size, out);
-    free(jpg);
+    bool is_jpeg = img_size > 2 && img[0] == 0xFF && img[1] == 0xD8;
+    bool is_png  = img_size > 8 && img[0] == 0x89 && img[1] == 'P' && img[2] == 'N' && img[3] == 'G';
+
+    bool ok = is_jpeg ? decode_jpeg_cover(img, img_size, out)
+            : is_png  ? decode_png_cover(img, img_size, out)
+            : false;
+    free(img);
     if (!ok) return false;
 
     f = fopen(cache_path, "wb");

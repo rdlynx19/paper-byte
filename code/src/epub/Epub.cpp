@@ -166,6 +166,13 @@ bool Epub::parse_content_opf(ZipFile &zip, std::string &content_opf_file)
     ESP_LOGE(TAG, "Missing spine");
     return false;
   }
+  // The spine's own toc="..." attribute is the authoritative reference to
+  // the NCX manifest item — its id isn't required to be "ncx" (e.g. some
+  // EPUB3 exports use id="toc" instead), so prefer it over the id=="ncx"
+  // naming convention checked in the manifest loop above.
+  const char *toc_id = spine->Attribute("toc");
+  if (toc_id && items.find(toc_id) != items.end())
+    m_toc_ncx_item = items[toc_id];
   // read the spine
   auto itemref = spine->FirstChildElement("itemref");
   while (itemref)
