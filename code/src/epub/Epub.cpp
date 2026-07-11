@@ -134,6 +134,10 @@ bool Epub::parse_content_opf(ZipFile &zip, std::string &content_opf_file)
   // create a mapping from id to file name
   auto item = manifest->FirstChildElement("item");
   std::map<std::string, std::string> items;
+  // EPUB3 fallback: <item properties="cover-image" .../>, used when there's
+  // no EPUB2-style <meta name="cover"> (or its referenced id doesn't match
+  // any manifest item).
+  std::string epub3_cover_href;
 
   while (item)
   {
@@ -146,10 +150,15 @@ bool Epub::parse_content_opf(ZipFile &zip, std::string &content_opf_file)
         m_cover_image_item = href;
       if (item_id == "ncx")
         m_toc_ncx_item = href;
+      const char *properties = item->Attribute("properties");
+      if (properties && std::string(properties).find("cover-image") != std::string::npos)
+        epub3_cover_href = href;
       items[item_id] = href;
     }
     item = item->NextSiblingElement("item");
   }
+  if (m_cover_image_item.empty())
+    m_cover_image_item = epub3_cover_href;
   // find the spine
   auto spine = package->FirstChildElement("spine");
   if (!spine)

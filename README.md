@@ -7,13 +7,13 @@ TODO:
     
     []Add Rotary Encoder in firmware
     
-    []Clean font rendering 
+    [x]Clean font rendering 
     
     [x]Organize code better
     
     []Clean up code
     
-    []Figure out a way to render images
+    [x]Figure out a way to render main page images
     
     []Make UI better
     

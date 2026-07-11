@@ -14,6 +14,7 @@ public:
     int get_text_width(const char *text, bool bold = false, bool italic = false) override;
 
     void draw_pixel(int x, int y, uint8_t color) override;
+    void draw_bitmap_1bpp(int x, int y, const uint8_t *bitmap, int width, int height) override;
     void draw_text(int x, int y, const char *text, bool bold = false, bool italic = false) override;
     void draw_rect(int x, int y, int width, int height, uint8_t color = 0) override;
     void fill_rect(int x, int y, int width, int height, uint8_t color = 0) override;

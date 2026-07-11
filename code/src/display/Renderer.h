@@ -33,6 +33,20 @@ public:
     virtual void fill_circle(int x, int y, int r, uint8_t color = 0) = 0;
     virtual void clear_screen() = 0;
 
+    // Blits a 1bpp bitmap (MSB-first, row-padded to a whole byte; a set bit
+    // is drawn as black ink) at (x, y). Default is a universal but slow
+    // pixel-by-pixel blit — concrete renderers should override with a native
+    // fast path where one exists.
+    virtual void draw_bitmap_1bpp(int x, int y, const uint8_t *bitmap, int width, int height) {
+        int row_bytes = width / 8 + (width % 8 ? 1 : 0);
+        for (int row = 0; row < height; row++) {
+            for (int col = 0; col < width; col++) {
+                bool black = bitmap[row * row_bytes + col / 8] & (0x80 >> (col % 8));
+                draw_pixel(x + col, y + row, black ? 1 : 0);
+            }
+        }
+    }
+
     // image support (stub is fine — draws a placeholder rectangle)
     virtual void draw_image(const std::string &filename, const uint8_t *data, size_t data_size,
                             int x, int y, int width, int height) {

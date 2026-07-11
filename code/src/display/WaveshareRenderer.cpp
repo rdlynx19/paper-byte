@@ -35,6 +35,12 @@ void WaveshareRenderer::draw_pixel(int x, int y, uint8_t color) {
     Paint_SetPixel(_tx(x), _ty(y), _color(color));
 }
 
+void WaveshareRenderer::draw_bitmap_1bpp(int x, int y, const uint8_t *bitmap, int width, int height) {
+    // flipColor=1: Paint_DrawBitMap_Paste otherwise treats a set bit as white,
+    // the opposite of every other bitmap (fonts, dithered covers) in this app.
+    Paint_DrawBitMap_Paste(bitmap, _tx(x), _ty(y), width, height, 1);
+}
+
 void WaveshareRenderer::draw_text(int x, int y, const char *text, bool bold, bool italic) {
     (void)italic;
     sFONT *f = bold ? &Font24 : &Font20;

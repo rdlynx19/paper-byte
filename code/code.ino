@@ -13,6 +13,7 @@
 #include "src/epub/RubbishHtmlParser.h"
 #include "src/storage/PositionStore.h"
 #include "src/model/State.h"
+#include "src/display/CoverArt.h"
 
 size_t getArduinoLoopTaskStackSize() { return 32768; }
 
@@ -294,6 +295,23 @@ static void show_msg(const char *line1, const char *line2 = nullptr) {
     display.showPage(framebuf, true);
 }
 
+// Cover thumbnail occupies a fixed strip on the left; everything else
+// (header, list, progress, footer) starts to the right of it.
+static const int COVER_GAP = 20;
+static const int TEXT_X    = COVER_THUMB_W + COVER_GAP;
+
+// Fetches (decoding + SD-caching as needed) and draws the cover for the book
+// at `epub_idx`. A throwaway Epub instance is enough — we only need its
+// title/cover metadata, not a full spine/TOC parse for reading.
+static void render_cover_thumbnail(int epub_idx) {
+    static uint8_t cover_buf[COVER_THUMB_BYTES];
+    if (epub_idx < 0 || epub_idx >= g_state.num_epubs) return;
+
+    Epub cover_epub(g_state.epub_list[epub_idx].path);
+    if (cover_epub.load() && get_cover_thumbnail(&cover_epub, cover_buf))
+        g_rend->draw_bitmap_1bpp(0, 0, cover_buf, COVER_THUMB_W, COVER_THUMB_H);
+}
+
 static void render_library() {
     g_rend->clear_screen();
     const int lh = g_rend->get_line_height();
@@ -302,15 +320,17 @@ static void render_library() {
     // Header
     char hdr[32];
     snprintf(hdr, sizeof(hdr), "LIBRARY  (%d books)", g_state.num_epubs);
-    g_rend->draw_text(0, y, hdr, true);
+    g_rend->draw_text(TEXT_X, y, hdr, true);
     y += lh + lh / 2;
 
     if (g_state.num_epubs == 0) {
-        g_rend->draw_text(0, y, "No books found.");  y += lh;
-        g_rend->draw_text(0, y, "Copy .epub files to /epub on SD card.");
+        g_rend->draw_text(TEXT_X, y, "No books found.");  y += lh;
+        g_rend->draw_text(TEXT_X, y, "Copy .epub files to /epub on SD card.");
         display.showPage(framebuf, true);
         return;
     }
+
+    render_cover_thumbnail(g_sel_epub);
 
     // How many items fit between header and the two footer lines
     const int footer_lines = 2;
@@ -333,7 +353,7 @@ static void render_library() {
 
         char line[40];
         snprintf(line, sizeof(line), "%s %s", sel ? ">" : " ", title);
-        g_rend->draw_text(0, y, line, sel);
+        g_rend->draw_text(TEXT_X, y, line, sel);
         y += lh;
     }
 
@@ -347,10 +367,10 @@ static void render_library() {
                  sel.pages_in_current_section);
     else
         strncpy(prog, "  (not yet opened)", sizeof(prog) - 1);
-    g_rend->draw_text(0, g_rend->get_page_height() - lh * 2, prog);
+    g_rend->draw_text(TEXT_X, g_rend->get_page_height() - lh * 2, prog);
 
     // Button hint
-    g_rend->draw_text(0, g_rend->get_page_height() - lh, "PREV/NEXT: navigate   SELECT: open");
+    g_rend->draw_text(TEXT_X, g_rend->get_page_height() - lh, "PREV/NEXT: navigate   SELECT: open");
     display.showPage(framebuf, true);
 }
 
