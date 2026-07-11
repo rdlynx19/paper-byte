@@ -2,6 +2,7 @@
 An ESP32 based E-Ink Reader
 
 TODO:
+
     []Add Rotary Encoder to PCB
     
     []Add Rotary Encoder in firmware
