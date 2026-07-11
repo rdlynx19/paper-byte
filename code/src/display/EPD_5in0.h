@@ -30,7 +30,7 @@
 #ifndef __EPD_5IN0_H_
 #define __EPD_5IN0_H_
 
-#include "DEV_Config.h"
+#include "../DEV_Config.h"
 
 // Display resolution
 #define EPD_5in0_WIDTH       960

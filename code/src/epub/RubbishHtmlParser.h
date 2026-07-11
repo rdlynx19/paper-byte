@@ -3,8 +3,8 @@
 #include <string>
 #include <list>
 #include <vector>
-#include "tinyxml2.h"
-#include "TextBlock.h"
+#include "../vendor/tinyxml2.h"
+#include "../model/TextBlock.h"
 
 using namespace std;
 

@@ -1,6 +1,6 @@
 #pragma once
 #include <stdint.h>
-#include "State.h"
+#include "../model/State.h"
 
 class PositionStore {
 public:

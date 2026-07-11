@@ -21,7 +21,7 @@
   printf("\n");
 #endif
 #include <map>
-#include "tinyxml2.h"
+#include "../vendor/tinyxml2.h"
 #include "ZipFile.h"
 #include "Epub.h"
 

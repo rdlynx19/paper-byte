@@ -6,7 +6,7 @@
 #endif
 #include "ZipFile.h"
 
-#include "miniz.h"
+#include "../vendor/miniz.h"
 
 #define TAG "ZIP"
 

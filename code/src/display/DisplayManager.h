@@ -1,6 +1,6 @@
 #pragma once
 #include <stdint.h>
-#include "config.h"
+#include "../config.h"
 
 class DisplayManager {
 public:

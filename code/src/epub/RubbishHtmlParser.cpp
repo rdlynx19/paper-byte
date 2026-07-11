@@ -13,11 +13,11 @@
 #include <list>
 #include <vector>
 #include "ZipFile.h"
-#include "Renderer.h"
+#include "../display/Renderer.h"
 #include "htmlEntities.h"
-#include "TextBlock.h"
-#include "ImageBlock.h"
-#include "Page.h"
+#include "../model/TextBlock.h"
+#include "../model/ImageBlock.h"
+#include "../model/Page.h"
 #include "RubbishHtmlParser.h"
 #include "Epub.h"
 

@@ -1,6 +1,6 @@
 #include "DisplayManager.h"
 #include "EPD_5in0.h"
-#include "DEV_Config.h"
+#include "../DEV_Config.h"
 
 void DisplayManager::begin() {
     DEV_Module_Init();

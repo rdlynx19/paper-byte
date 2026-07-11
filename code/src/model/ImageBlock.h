@@ -1,7 +1,7 @@
 #pragma once
-#include "Renderer.h"
+#include "../display/Renderer.h"
 #include "Block.h"
-#include "Epub.h"
+#include "../epub/Epub.h"
 #ifndef UNIT_TEST
 #include <esp_log.h>
 #else

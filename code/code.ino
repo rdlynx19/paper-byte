@@ -2,17 +2,17 @@
 #include <SD.h>
 #include <esp_sleep.h>
 #include <driver/rtc_io.h>
-#include "config.h"
-#include "Types.h"
-#include "EPD_5in0.h"
-#include "GUI_Paint.h"
-#include "fonts.h"
-#include "DisplayManager.h"
-#include "WaveshareRenderer.h"
-#include "Epub.h"
-#include "RubbishHtmlParser.h"
-#include "PositionStore.h"
-#include "State.h"
+#include "src/config.h"
+#include "src/model/Types.h"
+#include "src/display/EPD_5in0.h"
+#include "src/display/GUI_Paint.h"
+#include "src/display/fonts.h"
+#include "src/display/DisplayManager.h"
+#include "src/display/WaveshareRenderer.h"
+#include "src/epub/Epub.h"
+#include "src/epub/RubbishHtmlParser.h"
+#include "src/storage/PositionStore.h"
+#include "src/model/State.h"
 
 size_t getArduinoLoopTaskStackSize() { return 32768; }
 
