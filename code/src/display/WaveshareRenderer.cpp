@@ -1,4 +1,5 @@
 #include "WaveshareRenderer.h"
+#include "UnicodeFont.h"
 
 WaveshareRenderer::WaveshareRenderer(UBYTE *framebuf, int epd_w, int epd_h)
     : _epd_w(epd_w), _epd_h(epd_h)
@@ -27,7 +28,7 @@ int WaveshareRenderer::get_space_width() {
 int WaveshareRenderer::get_text_width(const char *text, bool bold, bool italic) {
     (void)italic;
     sFONT *f = bold ? &Font24 : &Font20;
-    return strlen(text) * f->Width;
+    return utf8_glyph_count(text) * f->Width;
 }
 
 void WaveshareRenderer::draw_pixel(int x, int y, uint8_t color) {
@@ -37,9 +38,9 @@ void WaveshareRenderer::draw_pixel(int x, int y, uint8_t color) {
 void WaveshareRenderer::draw_text(int x, int y, const char *text, bool bold, bool italic) {
     (void)italic;
     sFONT *f = bold ? &Font24 : &Font20;
-    // Paint_DrawString_EN internally swaps foreground/background when calling
-    // Paint_DrawChar, so we pass them pre-swapped here to get black on white.
-    Paint_DrawString_EN(_tx(x), _ty(y), text, f, WHITE, BLACK);
+    // Paint_DrawString_UTF8 internally swaps foreground/background when calling
+    // Paint_DrawGlyphBitmap, so we pass them pre-swapped here to get black on white.
+    Paint_DrawString_UTF8(_tx(x), _ty(y), text, f, WHITE, BLACK);
 }
 
 void WaveshareRenderer::draw_rect(int x, int y, int width, int height, uint8_t color) {

@@ -515,21 +515,17 @@ parameter:
     Color_Foreground : Select the foreground color
     Color_Background : Select the background color
 ******************************************************************************/
-void Paint_DrawChar(UWORD Xpoint, UWORD Ypoint, const char Acsii_Char,
-                    sFONT* Font, UWORD Color_Foreground, UWORD Color_Background)
+// Blits a Width x Height 1-bpp glyph bitmap (MSB-first, rows padded to a whole
+// number of bytes) at (Xpoint, Ypoint). Shared by Paint_DrawChar and the
+// Unicode-aware string drawing in UnicodeFont.cpp, so both index into font
+// tables the same way.
+void Paint_DrawGlyphBitmap(UWORD Xpoint, UWORD Ypoint, const unsigned char *ptr,
+                           UWORD Width, UWORD Height, UWORD Color_Foreground, UWORD Color_Background)
 {
     UWORD Page, Column;
 
-    if (Xpoint > Paint.Width || Ypoint > Paint.Height) {
-        Debug("Paint_DrawChar Input exceeds the normal display range\r\n");
-        return;
-    }
-
-    uint32_t Char_Offset = (Acsii_Char - ' ') * Font->Height * (Font->Width / 8 + (Font->Width % 8 ? 1 : 0));
-    const unsigned char *ptr = &Font->table[Char_Offset];
-
-    for (Page = 0; Page < Font->Height; Page ++ ) {
-        for (Column = 0; Column < Font->Width; Column ++ ) {
+    for (Page = 0; Page < Height; Page ++ ) {
+        for (Column = 0; Column < Width; Column ++ ) {
 
             //To determine whether the font background color and screen background color is consistent
             if (FONT_BACKGROUND == Color_Background) { //this process is to speed up the scan
@@ -549,9 +545,23 @@ void Paint_DrawChar(UWORD Xpoint, UWORD Ypoint, const char Acsii_Char,
             if (Column % 8 == 7)
                 ptr++;
         }// Write a line
-        if (Font->Width % 8 != 0)
+        if (Width % 8 != 0)
             ptr++;
     }// Write all
+}
+
+void Paint_DrawChar(UWORD Xpoint, UWORD Ypoint, const char Acsii_Char,
+                    sFONT* Font, UWORD Color_Foreground, UWORD Color_Background)
+{
+    if (Xpoint > Paint.Width || Ypoint > Paint.Height) {
+        Debug("Paint_DrawChar Input exceeds the normal display range\r\n");
+        return;
+    }
+
+    uint32_t Char_Offset = (Acsii_Char - ' ') * Font->Height * (Font->Width / 8 + (Font->Width % 8 ? 1 : 0));
+    const unsigned char *ptr = &Font->table[Char_Offset];
+
+    Paint_DrawGlyphBitmap(Xpoint, Ypoint, ptr, Font->Width, Font->Height, Color_Foreground, Color_Background);
 }
 
 /******************************************************************************
