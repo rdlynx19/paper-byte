@@ -9,7 +9,7 @@ TODO:
     
     []Clean font rendering 
     
-    []Organize code better
+    [x]Organize code better
     
     []Clean up code
     
