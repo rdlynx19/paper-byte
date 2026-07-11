@@ -20,6 +20,11 @@
 #define BTN_NEXT   17
 #define BTN_SELECT 18
 
+// STEMMA QT / I2C (battery fuel gauge)
+#define I2C_SDA    3
+#define I2C_SCL    4
+#define I2C_POWER  7   // must be driven HIGH to power the STEMMA QT connector
+
 // Display geometry
 #define EPD_W     960
 #define EPD_H     552

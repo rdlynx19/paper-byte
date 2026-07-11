@@ -1,6 +1,7 @@
 #include <SPI.h>
 #include <SD.h>
 #include <esp_sleep.h>
+#include <esp_system.h>
 #include <driver/rtc_io.h>
 #include "src/config.h"
 #include "src/model/Types.h"
@@ -14,6 +15,7 @@
 #include "src/storage/PositionStore.h"
 #include "src/model/State.h"
 #include "src/display/CoverArt.h"
+#include "src/power/Battery.h"
 
 size_t getArduinoLoopTaskStackSize() { return 32768; }
 
@@ -23,6 +25,7 @@ size_t getArduinoLoopTaskStackSize() { return 32768; }
 // =============================================================================
 
 DisplayManager    display;           // trivial constructor — safe as global
+Battery           g_battery;          // trivial constructor — safe as global
 UBYTE            *framebuf  = nullptr;
 WaveshareRenderer *g_rend   = nullptr;
 Epub              *g_epub   = nullptr;
@@ -202,6 +205,9 @@ static void fast_resume() {
     // Buttons
     init_buttons();
 
+    // Battery gauge (I2C/peripheral state doesn't survive deep sleep)
+    g_battery.begin();
+
     // Restore navigation state from RTC memory
     g_app_state   = (AppState)rtc_sleep.app_state;
     g_sel_epub    = rtc_sleep.sel_epub;
@@ -281,10 +287,35 @@ static bool load_spine_item(int spine_index, int page_index) {
 // Screen renderers
 // =============================================================================
 
+// Battery icon + percentage, drawn in the top margin band — a blank buffer
+// zone above the content area on every screen — so it never displaces text
+// or affects pagination. Safe to call from any screen renderer.
+static void draw_battery_indicator() {
+    if (!g_battery.available()) return;
+    g_battery.update();
+
+    const int icon_w = 32, icon_h = 16, nub_w = 3, nub_h = 8;
+    const int y = -26; // within the top margin band, above y=0 content
+    const int x = g_rend->get_page_width() - icon_w - nub_w;
+
+    char pct[8];
+    snprintf(pct, sizeof(pct), "%d%%%s", g_battery.percent(), g_battery.is_charging() ? "+" : "");
+    int text_w = (int)strlen(pct) * g_rend->get_space_width();
+    g_rend->draw_text(x - text_w - 6, y - 2, pct);
+
+    g_rend->draw_rect(x, y, icon_w, icon_h, 1);
+    g_rend->fill_rect(x + icon_w, y + (icon_h - nub_h) / 2, nub_w, nub_h, 1);
+
+    int fill_w = (icon_w - 4) * g_battery.percent() / 100;
+    if (fill_w > 0)
+        g_rend->fill_rect(x + 2, y + 2, fill_w, icon_h - 4, 1);
+}
+
 static void render_current_page() {
     if (!g_parser || !g_rend || !g_epub) return;
     g_rend->clear_screen();
     g_parser->render_page(g_page_index, g_rend, g_epub);
+    draw_battery_indicator();
 }
 
 static void show_msg(const char *line1, const char *line2 = nullptr) {
@@ -341,6 +372,7 @@ static void render_library() {
     if (g_state.num_epubs == 0) {
         g_rend->draw_text(0, y, "No books found.");  y += lh;
         g_rend->draw_text(0, y, "Copy .epub files to /epub on SD card.");
+        draw_battery_indicator();
         display.showPage(framebuf, true);
         return;
     }
@@ -397,6 +429,7 @@ static void render_library() {
 
     // Button hint
     g_rend->draw_text(0, g_rend->get_page_height() - lh, "PREV/NEXT: navigate   SELECT: open");
+    draw_battery_indicator();
     display.showPage(framebuf, true);
 }
 
@@ -415,6 +448,7 @@ static void render_menu() {
         g_rend->draw_text(0, y, line, i == g_menu_sel);
         y += lh;
     }
+    draw_battery_indicator();
     display.showPage(framebuf, true);
 }
 
@@ -582,8 +616,29 @@ static void handle_menu(Btn b) {
 // Arduino entry points
 // =============================================================================
 
+// Reported at every boot so a reset while running on battery is
+// distinguishable from a genuine power failure — e.g. BROWNOUT means the
+// supply sagged under load and the chip reset (the e-ink panel just keeps
+// showing its last frame through that, looking like the device "stopped").
+static const char *reset_reason_str(esp_reset_reason_t r) {
+    switch (r) {
+        case ESP_RST_POWERON:   return "power-on";
+        case ESP_RST_EXT:       return "external pin";
+        case ESP_RST_SW:        return "software reset";
+        case ESP_RST_PANIC:     return "panic/exception";
+        case ESP_RST_INT_WDT:   return "interrupt watchdog";
+        case ESP_RST_TASK_WDT:  return "task watchdog";
+        case ESP_RST_WDT:       return "other watchdog";
+        case ESP_RST_DEEPSLEEP: return "woke from deep sleep";
+        case ESP_RST_BROWNOUT:  return "BROWNOUT (supply sagged)";
+        case ESP_RST_SDIO:      return "SDIO";
+        default:                return "unknown";
+    }
+}
+
 void setup() {
     Serial.begin(115200);
+    Serial.printf("Reset reason: %s\n", reset_reason_str(esp_reset_reason()));
 
     // Fast path: wake from deep sleep
     if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT1
@@ -616,6 +671,9 @@ void setup() {
 
     // Buttons
     init_buttons();
+
+    // Battery gauge
+    g_battery.begin();
 
     // Load persisted state and scan for new epubs
     PositionStore::load(&g_state);
