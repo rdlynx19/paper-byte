@@ -20,4 +20,5 @@ TODO:
     []Integrate BMS into firmware
     
     []Check if device runs over battery
-    
+
+    []Add way of adding/removing files from SD card over network
