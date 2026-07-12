@@ -16,9 +16,9 @@ void DisplayManager::wake() {
     _has_shown_full = false;
 }
 
-void DisplayManager::sleep() {
+void DisplayManager::sleep(bool clear_first) {
     EPD_5in0_Init();
-    EPD_5in0_Clear();
+    if (clear_first) EPD_5in0_Clear();
     EPD_5in0_Sleep();
     DEV_Module_Exit();
 }

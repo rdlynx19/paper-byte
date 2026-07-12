@@ -6,7 +6,12 @@ class DisplayManager {
 public:
     void begin();
     void wake();   // re-init after deep sleep without clearing the panel
-    void sleep();
+    // clear_first=true: blank the panel before sleeping (prevents ghosting
+    // when there's nothing meaningful to leave showing). Pass false when the
+    // framebuffer already holds something worth keeping visible through deep
+    // sleep (e.g. a sleep/cover screen) — the panel's bistable, zero-power
+    // display hold means it stays on screen with the controller powered down.
+    void sleep(bool clear_first = true);
 
     // call after every page change — handles full/partial decision automatically
     void showPage(const uint8_t *buf, bool force_full = false);

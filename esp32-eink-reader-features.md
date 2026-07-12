@@ -4,38 +4,38 @@ Select the items you want implemented and hand this list to your coding agent.
 
 ## Core Reading Experience
 
-- [ ] Partial refresh for page turns (avoid full black-flash refresh every page) — *the driver-level plumbing exists (`DisplayManager::_partial_refresh`, `EPD_5in0_Display_Partial`), but every call site in `code.ino` passes `force_full=true`, so in practice every page turn still does a full refresh.*
-- [ ] Ghosting management (periodic full refresh every N pages to clear artifacts) — *same story: `FULL_REFRESH_EVERY` and the partial-refresh counter are implemented in `DisplayManager`, just unused since partial refresh is never actually triggered.*
+- [ ] Partial refresh for page turns (avoid full black-flash refresh every page) — **deferred, revisit last**: worth retrying, but only after everything else on this list — last attempt hung the display on this specific panel, and next time should start from Waveshare's actual reference example for this panel rather than guessing at the command sequence again.
+- [ ] Ghosting management (periodic full refresh every N pages to clear artifacts) — deferred alongside partial refresh (same underlying plumbing, `DisplayManager`'s `FULL_REFRESH_EVERY` counter).
 - [x] Crisp font rendering tuned for e-ink (proper hinting, no reliance on LCD-style anti-aliasing) — fixed-size bitmap fonts, no anti-aliasing anywhere in the pipeline.
-- [ ] Reflowable text layout (word-wrap, adjustable font size, line spacing, margins) — *word-wrap (`TextBlock`'s line-breaking) and margins exist; there's no user-facing font-size setting.*
+- [x] Reflowable text layout (word-wrap, adjustable font size, line spacing, margins) — word-wrap (`TextBlock`), margins, and a Regular/Large font-size toggle (Settings screen) all exist.
 - [x] Persistent page position per book (resumes exactly where you left off, survives power loss) — `PositionStore` (SD-backed).
 
 ## File / Library Management
 
 - [x] Book library screen (grid or list view with cached cover thumbnails)
 - [x] EPUB support (unzip + parse XHTML)
-- [ ] Plain text (.txt) support
-- [ ] Basic PDF support (or pre-converted format pipeline)
-- [ ] Metadata parsing (title/author extraction, not just filenames) — *title extraction from `dc:title` is done; author (`dc:creator`) is never parsed.*
-- [ ] SD card storage with cached index (avoid re-scanning on every boot) — *book list/position is cached to SD, but `scan_for_epubs()` still walks the SD directory on every boot to find new files (just skips re-parsing already-known ones).*
+- [ ] ~~Plain text (.txt) support~~ — not needed: EPUB-only by choice.
+- [ ] ~~Basic PDF support~~ — not needed: EPUB-only by choice.
+- [x] Metadata parsing (title/author extraction, not just filenames) — `dc:title` and `dc:creator` both parsed and shown in the library.
+- [ ] ~~SD card storage with cached index~~ — not needed.
 
 ## Navigation & Input
 
-- [ ] Low-latency page-forward/back (fastest path in the whole UI) — *page turns within a chapter don't re-parse HTML (see below), but every turn still forces a full e-ink refresh, which dominates perceived latency.*
-- [ ] Hierarchical settings menu (font size, orientation, sleep timeout, Wi-Fi, battery info) — only a 3-item menu exists (Continue Reading / Go to Library / Sleep).
-- [ ] Table of contents / chapter jump — *`Epub` already parses the full TOC (`m_toc`, `get_toc_item`), but there's no screen to browse/jump via it.*
-- [ ] Bookmarks (simple, persistent, low-friction add/remove)
+- [ ] Low-latency page-forward/back (fastest path in the whole UI) — deferred alongside partial refresh; page turns within a chapter already don't re-parse HTML, the remaining latency is the full e-ink refresh itself.
+- [x] Hierarchical settings menu (font size, sleep timeout, battery info) — no orientation or Wi-Fi option, since neither applies to this project (see below).
+- [x] Table of contents / chapter jump — full screen, reachable from the reader menu, jumps to the chapter's first page.
+- [ ] **Bookmarks (simple, persistent, low-friction add/remove) — wanted, next up.**
 
 ## System-Level UI
 
 - [x] Accurate battery percentage indicator (not just voltage-guessing) — MAX17048 fuel gauge.
-- [ ] Sleep/wake static cover screen (leverages e-ink's bistable, zero-power display hold) — *the bistable zero-power hold is used correctly, but the screen is cleared to blank white before sleeping, not a cover/graphic.*
-- [ ] Low battery / charging screens
-- [ ] Wi-Fi/status icons (if doing OTA updates or content downloads) — no Wi-Fi in the project at all currently.
-- [ ] Boot screen shown immediately at power-on — panel just holds whatever was last on it until the library screen finishes rendering.
+- [ ] **Sleep/wake static cover screen — wanted.** Currently clears to blank white before sleeping instead of showing something (e.g. the current book's cover).
+- [ ] **Low battery / charging screen — wanted** (a real warning state, beyond the plain percentage already shown everywhere).
+- [ ] ~~Wi-Fi/status icons~~ — not needed: no Wi-Fi hardware/use case anywhere in this project (purely offline, SD-card-based reader).
+- [ ] ~~Boot screen shown immediately at power-on~~ — not needed.
 
 ## Performance-Driven Design (ESP32 + E-ink specific)
 
-- [ ] Minimize full-screen redraws (design for small partial-refresh regions) — *contradicted by current behavior: every redraw is a full-screen refresh (see partial refresh note above).*
+- [ ] Minimize full-screen redraws (design for small partial-refresh regions) — deferred alongside partial refresh.
 - [x] Pre-render/cache current chapter pages to framebuffer (avoid re-parsing on page-back) — a chapter is fully laid out once per spine load; paging within it just re-renders from that cached layout.
-- [ ] Use PSRAM for framebuffer / double buffering (on ESP32-S3 or similar variants) — *framebuffer is PSRAM-allocated (`ps_malloc`), but there's a single buffer, not double-buffered.*
+- [ ] ~~Use PSRAM for framebuffer / double buffering~~ — not needed.

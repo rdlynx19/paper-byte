@@ -153,6 +153,34 @@ static void save_position() {
 // Deep sleep
 // =============================================================================
 
+// Draws the currently open book's cover full-bleed (or a plain
+// "Sleeping..." message if it has none), so it stays visible at zero power
+// while the panel sleeps — leverages e-ink's bistable hold instead of
+// clearing to blank white. No title text: the cover art already carries it.
+// Only called when a book is actually open (see enter_deep_sleep(), which
+// clears to white otherwise). Allocated from PSRAM rather than a static
+// buffer — at full-screen size (~53KB) it's not worth permanently reserving
+// for a screen only drawn once, right before a multi-hour sleep.
+static void render_sleep_cover() {
+    g_rend->clear_screen();
+
+    uint8_t *cover_buf = (uint8_t *)ps_malloc(COVER_SLEEP_BYTES);
+    bool have_cover = cover_buf && get_cover_sleep_bitmap(g_epub, cover_buf);
+
+    if (have_cover) {
+        int x = (g_rend->get_page_width()  - COVER_SLEEP_W) / 2;
+        int y = (g_rend->get_page_height() - COVER_SLEEP_H) / 2;
+        g_rend->draw_bitmap_1bpp(x, y, cover_buf, COVER_SLEEP_W, COVER_SLEEP_H);
+    } else {
+        const char *msg = "Sleeping...";
+        int text_w = (int)strlen(msg) * g_rend->get_space_width();
+        g_rend->draw_text((g_rend->get_page_width() - text_w) / 2, g_rend->get_page_height() / 2, msg);
+    }
+    free(cover_buf);
+
+    display.showPage(framebuf, true);
+}
+
 static void enter_deep_sleep() {
     Serial.println("Idle: entering deep sleep");
     Serial.flush();
@@ -178,8 +206,16 @@ static void enter_deep_sleep() {
     rtc_gpio_pulldown_dis((gpio_num_t)BTN_NEXT);
     rtc_gpio_pulldown_dis((gpio_num_t)BTN_SELECT);
 
-    // Clear panel to white before sleeping (prevents ghosting / long-term image burn).
-    display.sleep();
+    if (g_epub) {
+        // A book is open — leave its cover on screen instead of blanking it;
+        // e-ink holds the image with zero power through deep sleep.
+        render_sleep_cover();
+        display.sleep(false);
+    } else {
+        // No book open (e.g. sleeping from the library) — clear to white
+        // rather than leave an arbitrary screen state burned in indefinitely.
+        display.sleep(true);
+    }
 
     esp_deep_sleep_start();
     // Never returns.
