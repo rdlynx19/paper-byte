@@ -299,7 +299,7 @@ static void draw_battery_indicator() {
     const int x = g_rend->get_page_width() - icon_w - nub_w;
 
     char pct[8];
-    snprintf(pct, sizeof(pct), "%d%%%s", g_battery.percent(), g_battery.is_charging() ? "+" : "");
+    snprintf(pct, sizeof(pct), "%d%%", g_battery.percent());
     int text_w = (int)strlen(pct) * g_rend->get_space_width();
     g_rend->draw_text(x - text_w - 6, y - 2, pct);
 

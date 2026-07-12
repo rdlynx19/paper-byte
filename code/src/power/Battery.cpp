@@ -55,19 +55,5 @@ void Battery::update(bool force) {
     if (pct > 100) pct = 100;
     m_percent = (int)(pct + 0.5f);
 
-    // Charging, inferred from whether voltage is actually rising rather
-    // than the gauge's own charge-rate register (see Battery.h — that
-    // turned out to sit at 0 in practice even while genuinely charging).
-    if (m_trend_ref_ms == 0) {
-        m_trend_ref_v  = voltage;
-        m_trend_ref_ms = now;
-    } else if (now - m_trend_ref_ms >= TREND_INTERVAL_MS) {
-        m_charging     = (voltage - m_trend_ref_v) > TREND_RISE_THRESHOLD_V;
-        m_trend_ref_v  = voltage;
-        m_trend_ref_ms = now;
-    }
-
-    float rate = m_gauge.chargeRate();
-    Serial.printf("Battery: %.3f V, %d%%, gauge_rate=%.2f%%/hr, charging=%d\n",
-                  voltage, m_percent, rate, m_charging);
+    Serial.printf("Battery: %.3f V, %d%%\n", voltage, m_percent);
 }
