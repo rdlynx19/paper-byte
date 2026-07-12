@@ -308,3 +308,11 @@ bool get_cover_bitmap(Epub *epub, uint8_t *out, int width, int height) {
     }
     return true;
 }
+
+void invalidate_cover_cache(const std::string &epub_path) {
+    char path[64];
+    cover_cache_path(epub_path, COVER_THUMB_W, COVER_THUMB_H, path, sizeof(path));
+    remove(path);
+    cover_cache_path(epub_path, COVER_SLEEP_W, COVER_SLEEP_H, path, sizeof(path));
+    remove(path);
+}

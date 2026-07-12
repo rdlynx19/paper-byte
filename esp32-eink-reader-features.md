@@ -29,9 +29,9 @@ Select the items you want implemented and hand this list to your coding agent.
 ## System-Level UI
 
 - [x] Accurate battery percentage indicator (not just voltage-guessing) — MAX17048 fuel gauge.
-- [ ] **Sleep/wake static cover screen — wanted.** Currently clears to blank white before sleeping instead of showing something (e.g. the current book's cover).
+- [x] Sleep/wake static cover screen — shows the open book's cover full-bleed before sleeping (falls back to a plain "Sleeping..." message if it has none); e-ink holds it with zero power. Only clears to blank white when no book is open.
 - [ ] **Low battery / charging screen — wanted** (a real warning state, beyond the plain percentage already shown everywhere).
-- [ ] ~~Wi-Fi/status icons~~ — not needed: no Wi-Fi hardware/use case anywhere in this project (purely offline, SD-card-based reader).
+- [ ] **Wi-Fi file manager — now needed, not optional.** Reversing the earlier "not needed" call: the case design will likely block physical access to the SD card, so wireless add/delete is the only way to manage books post-assembly. Full plan in `wifi-file-manager-plan.md`.
 - [ ] ~~Boot screen shown immediately at power-on~~ — not needed.
 
 ## Performance-Driven Design (ESP32 + E-ink specific)

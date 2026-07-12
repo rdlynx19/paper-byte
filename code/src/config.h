@@ -36,3 +36,8 @@
 // Behaviour
 #define SLEEP_TIMEOUT_MS    300000   // 5 min idle before deep sleep
 #define FULL_REFRESH_EVERY  8        // partial refreshes between forced full refresh
+
+// Wireless file manager (AP mode) — entered deliberately from the Library
+// menu, never on automatically. WPA2 requires an 8+ char password.
+#define WIFI_AP_SSID     "PaperByte-Files"
+#define WIFI_AP_PASSWORD "paperbyte"

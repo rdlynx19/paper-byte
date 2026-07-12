@@ -17,6 +17,7 @@
 #include "src/display/CoverArt.h"
 #include "src/power/Battery.h"
 #include "src/storage/SettingsStore.h"
+#include "src/network/FileServer.h"
 
 size_t getArduinoLoopTaskStackSize() { return 32768; }
 
@@ -41,6 +42,7 @@ int g_sel_epub      = 0;            // selected row in library screen
 int g_menu_sel      = 0;            // selected row in menu
 int g_settings_sel  = 0;            // selected row in settings screen
 int g_toc_sel       = 0;            // selected row in table-of-contents screen
+int g_library_menu_sel = 0;         // selected row in library menu
 
 ReaderSettings g_settings;          // populated from SD in setup()/fast_resume()
 
@@ -75,20 +77,47 @@ static void init_buttons() {
     pinMode(BTN_SELECT, INPUT_PULLUP);
 }
 
+static const unsigned long LONG_PRESS_MS = 600;
+
+// SELECT distinguishes a short tap (BTN_OK) from a held press (BTN_OK_LONG —
+// used to reach the Library menu). This means BTN_OK now fires on release
+// rather than on press, so its action can be suppressed if the hold turns
+// into a long-press instead: the first ~600ms of a long-press is
+// indistinguishable from a short tap, so there's no way to know which one
+// it'll be until either the threshold passes (long) or the button comes back
+// up first (short). PREV/NEXT are untouched (still fire on press) since
+// they're the rapid-repeat page-turn buttons and don't need this.
 static Btn read_button() {
     static bool lp = false, ln = false, ls = false;
     static unsigned long quiet_until = 0;
+    static unsigned long select_press_start = 0;
+    static bool select_long_fired = false;
 
     bool cp = digitalRead(BTN_PREV)   == LOW;
     bool cn = digitalRead(BTN_NEXT)   == LOW;
     bool cs = digitalRead(BTN_SELECT) == LOW;
 
     Btn b = BTN_NONE;
+
     if (millis() >= quiet_until) {
-        if      (cp && !lp) b = BTN_LEFT;
-        else if (cn && !ln) b = BTN_RIGHT;
-        else if (cs && !ls) b = BTN_OK;
-        if (b != BTN_NONE) quiet_until = millis() + 200;
+        if      (cp && !lp) { b = BTN_LEFT;  quiet_until = millis() + 200; }
+        else if (cn && !ln) { b = BTN_RIGHT; quiet_until = millis() + 200; }
+    }
+
+    if (cs && !ls) {
+        select_press_start = millis();
+        select_long_fired  = false;
+    } else if (cs && select_press_start != 0 && !select_long_fired
+               && millis() - select_press_start >= LONG_PRESS_MS) {
+        select_long_fired = true;
+        b = BTN_OK_LONG;
+    } else if (!cs && ls) {
+        if (!select_long_fired && millis() >= quiet_until) {
+            b = BTN_OK;
+            quiet_until = millis() + 200;
+        }
+        select_press_start = 0;
+        select_long_fired  = false;
     }
 
     lp = cp; ln = cn; ls = cs;
@@ -261,6 +290,11 @@ static void fast_resume() {
     g_menu_sel    = rtc_sleep.menu_sel;
     // Settings/TOC aren't worth round-tripping through RTC memory — fall back to Menu
     if (g_app_state == ST_SETTINGS || g_app_state == ST_TOC) g_app_state = ST_MENU;
+    // Library menu / file transfer likewise fall back to the Library itself
+    // (file transfer suspends idle-sleep, so this path is really only the
+    // Library menu's own "Sleep" option; WiFi never survives deep sleep
+    // regardless, so there's nothing meaningful to resume into anyway).
+    if (g_app_state == ST_LIBRARY_MENU || g_app_state == ST_FILE_TRANSFER) g_app_state = ST_LIBRARY;
 
     // Load epub list from SD (needed for open_epub / render_library)
     PositionStore::load(&g_state);
@@ -659,6 +693,127 @@ static void handle_library(Btn b) {
             delay(2000);
             render_library();
         }
+    } else if (b == BTN_OK_LONG) {
+        g_library_menu_sel = 0;
+        render_library_menu();
+        g_app_state = ST_LIBRARY_MENU;
+    }
+}
+
+// =============================================================================
+// Library menu (Wi-Fi file transfer, sleep)
+// =============================================================================
+
+static const int LIBRARY_MENU_ITEM_COUNT = 3; // File Transfer, Sleep, Back
+
+static void render_library_menu() {
+    g_rend->clear_screen();
+    const int lh = g_rend->get_line_height();
+    int y = g_rend->get_page_height() / 2 - lh * (LIBRARY_MENU_ITEM_COUNT + 1);
+
+    g_rend->draw_text(0, y, "LIBRARY MENU", true);
+    y += lh + lh / 2;
+
+    const char *opts[] = { "File Transfer (Wi-Fi)", "Sleep", "Back" };
+    for (int i = 0; i < LIBRARY_MENU_ITEM_COUNT; i++) {
+        char line[32];
+        snprintf(line, sizeof(line), "%s %s", (i == g_library_menu_sel) ? ">" : " ", opts[i]);
+        g_rend->draw_text(0, y, line, i == g_library_menu_sel);
+        y += lh;
+    }
+    draw_top_strip();
+    display.showPage(framebuf, true);
+}
+
+static void render_file_transfer() {
+    g_rend->clear_screen();
+    const int lh = g_rend->get_line_height();
+    int y = 0;
+
+    g_rend->draw_text(0, y, "FILE TRANSFER", true);
+    y += lh + lh / 2;
+
+    char line[64];
+    g_rend->draw_text(0, y, "Connect your phone/laptop to:"); y += lh;
+    snprintf(line, sizeof(line), "  Wi-Fi: %s", g_file_server.ssid());
+    g_rend->draw_text(0, y, line); y += lh;
+    snprintf(line, sizeof(line), "  Password: %s", g_file_server.password());
+    g_rend->draw_text(0, y, line); y += lh + lh / 2;
+
+    g_rend->draw_text(0, y, "Then open in a browser:"); y += lh;
+    snprintf(line, sizeof(line), "  http://%s", g_file_server.ip().toString().c_str());
+    g_rend->draw_text(0, y, line); y += lh + lh / 2;
+
+    g_rend->draw_text(0, y, "SELECT: stop and return to library");
+    draw_top_strip();
+    display.showPage(framebuf, true);
+}
+
+// Path stored in EpubListItem carries the "/sd" VFS-style prefix used for
+// fopen()/miniz elsewhere; the SD library's own calls want it stripped.
+static bool epub_file_still_exists(const char *stored_path) {
+    const char *p = stored_path;
+    if (strncmp(p, "/sd", 3) == 0) p += 3;
+    return SD.exists(p);
+}
+
+// Drops any library entries whose underlying file no longer exists (deleted
+// via the file-transfer web page), cleans up their cached cover thumbnails,
+// then re-scans for anything newly uploaded. Called once on exiting file
+// transfer mode, not per-request, since the web page doesn't share g_state.
+static void reconcile_library_after_file_transfer() {
+    int write_idx = 0;
+    for (int i = 0; i < g_state.num_epubs; i++) {
+        if (epub_file_still_exists(g_state.epub_list[i].path)) {
+            if (write_idx != i) g_state.epub_list[write_idx] = g_state.epub_list[i];
+            write_idx++;
+        } else {
+            Serial.printf("File transfer: %s removed, dropping from library\n", g_state.epub_list[i].path);
+            invalidate_cover_cache(g_state.epub_list[i].path);
+        }
+    }
+    g_state.num_epubs = write_idx;
+    if (g_sel_epub >= g_state.num_epubs) g_sel_epub = max(0, g_state.num_epubs - 1);
+
+    scan_for_epubs(); // pick up anything newly uploaded
+    PositionStore::save(g_state);
+}
+
+static void handle_library_menu(Btn b) {
+    if (b == BTN_LEFT) {
+        if (g_library_menu_sel > 0) { g_library_menu_sel--; render_library_menu(); }
+    } else if (b == BTN_RIGHT) {
+        if (g_library_menu_sel < LIBRARY_MENU_ITEM_COUNT - 1) { g_library_menu_sel++; render_library_menu(); }
+    } else if (b == BTN_OK) {
+        if (g_library_menu_sel == 0) {
+            // File Transfer
+            if (g_file_server.begin()) {
+                render_file_transfer();
+                g_app_state = ST_FILE_TRANSFER;
+            } else {
+                show_msg("Failed to start Wi-Fi.");
+                delay(2000);
+                render_library_menu();
+            }
+        } else if (g_library_menu_sel == 1) {
+            // Sleep
+            enter_deep_sleep(); // never returns
+        } else {
+            // Back
+            render_library();
+            g_app_state = ST_LIBRARY;
+        }
+    }
+}
+
+static void handle_file_transfer(Btn b) {
+    // Any button stops it — this screen has nothing to navigate, and
+    // BTN_OK_LONG shouldn't require an extra plain tap first to register.
+    if (b == BTN_OK || b == BTN_OK_LONG) {
+        g_file_server.stop();
+        reconcile_library_after_file_transfer();
+        render_library();
+        g_app_state = ST_LIBRARY;
     }
 }
 
@@ -974,22 +1129,29 @@ void setup() {
 }
 
 void loop() {
+    if (g_app_state == ST_FILE_TRANSFER) g_file_server.update();
+
     Btn b = read_button();
     if (b != BTN_NONE) {
         Serial.printf("Button: %d, state: %d\n", (int)b, (int)g_app_state);
         g_last_activity = millis();
         switch (g_app_state) {
-            case ST_LIBRARY:  handle_library(b);  break;
-            case ST_READER:   handle_reader(b);   break;
-            case ST_MENU:     handle_menu(b);     break;
-            case ST_SETTINGS: handle_settings(b); break;
-            case ST_TOC:      handle_toc(b);      break;
+            case ST_LIBRARY:       handle_library(b);       break;
+            case ST_READER:        handle_reader(b);        break;
+            case ST_MENU:          handle_menu(b);          break;
+            case ST_SETTINGS:      handle_settings(b);      break;
+            case ST_TOC:           handle_toc(b);           break;
+            case ST_LIBRARY_MENU:  handle_library_menu(b);  break;
+            case ST_FILE_TRANSFER: handle_file_transfer(b); break;
         }
         Serial.println("Button: handler returned");
     }
 
-    // Idle timeout — save position then deep sleep
-    if (millis() - g_last_activity > g_settings.sleep_timeout_ms) {
+    // Idle timeout — save position then deep sleep. Suspended during file
+    // transfer: don't want to yank WiFi/the SD card mid-upload just because
+    // the user hasn't touched a button while their phone does the work.
+    if (g_app_state != ST_FILE_TRANSFER
+        && millis() - g_last_activity > g_settings.sleep_timeout_ms) {
         save_position();
         enter_deep_sleep();  // never returns
     }

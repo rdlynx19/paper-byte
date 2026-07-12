@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include <string>
 
 class Epub;
 
@@ -40,3 +41,9 @@ inline bool get_cover_thumbnail(Epub *epub, uint8_t *out) {
 inline bool get_cover_sleep_bitmap(Epub *epub, uint8_t *out) {
     return get_cover_bitmap(epub, out, COVER_SLEEP_W, COVER_SLEEP_H);
 }
+
+// Removes any cached cover bitmap(s) for `epub_path` (both the thumbnail and
+// sleep-screen sizes) — call this when the underlying epub file itself is
+// deleted, so a future, different book that happens to land on the same
+// path can't ever read back a stale cache entry.
+void invalidate_cover_cache(const std::string &epub_path);
