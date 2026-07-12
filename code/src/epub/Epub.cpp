@@ -111,6 +111,13 @@ bool Epub::parse_content_opf(ZipFile &zip, std::string &content_opf_file)
     return false;
   }
   m_title = title->GetText();
+
+  auto creator = metadata->FirstChildElement("dc:creator");
+  if (creator && creator->GetText())
+    m_author = creator->GetText();
+  else
+    ESP_LOGW(TAG, "Missing author");
+
   auto cover = metadata->FirstChildElement("meta");
   while (cover && cover->Attribute("name") && strcmp(cover->Attribute("name"), "cover") != 0)
   {
@@ -299,6 +306,11 @@ const std::string &Epub::get_title()
   return m_title;
 }
 
+const std::string &Epub::get_author()
+{
+  return m_author;
+}
+
 const std::string &Epub::get_cover_image_item()
 {
   return m_cover_image_item;
@@ -401,4 +413,21 @@ int Epub::get_spine_index_for_toc_index(int toc_index)
   ESP_LOGI(TAG, "Section not found");
   // not found - default to the start of the book
   return 0;
+}
+
+// work out which toc entry covers a given spine index
+int Epub::get_toc_index_for_spine_index(int spine_index)
+{
+  int best       = -1;
+  int best_spine = -1;
+  for (int i = 0; i < (int)m_toc.size(); i++)
+  {
+    int s = get_spine_index_for_toc_index(i);
+    if (s <= spine_index && s > best_spine)
+    {
+      best       = i;
+      best_spine = s;
+    }
+  }
+  return best;
 }

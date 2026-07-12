@@ -298,15 +298,25 @@ static bool load_spine_item(int spine_index, int page_index) {
 // Screen renderers
 // =============================================================================
 
-// Battery icon + percentage, drawn in the top margin band — a blank buffer
-// zone above the content area on every screen — so it never displaces text
-// or affects pagination. Safe to call from any screen renderer.
-static void draw_battery_indicator() {
+// Chapter number (left) + battery icon/percentage (right), drawn in the top
+// margin band — a blank buffer zone above the content area on every screen —
+// so it never displaces text or affects pagination. Safe to call from any
+// screen renderer. Chapter number only shows while a book is open (Reader,
+// Menu, Settings, TOC); it's naturally absent on the Library screen since
+// g_epub is null there.
+static void draw_top_strip() {
+    const int y = -26; // within the top margin band, above y=0 content
+
+    if (g_epub) {
+        char chapter[16];
+        snprintf(chapter, sizeof(chapter), "Chapter %d", chapter_number_for_spine(g_epub, g_spine_index));
+        g_rend->draw_text(0, y - 2, chapter);
+    }
+
     if (!g_battery.available()) return;
     g_battery.update();
 
     const int icon_w = 32, icon_h = 16, nub_w = 3, nub_h = 8;
-    const int y = -26; // within the top margin band, above y=0 content
     const int x = g_rend->get_page_width() - icon_w - nub_w;
 
     char pct[8];
@@ -326,7 +336,7 @@ static void render_current_page() {
     if (!g_parser || !g_rend || !g_epub) return;
     g_rend->clear_screen();
     g_parser->render_page(g_page_index, g_rend, g_epub);
-    draw_battery_indicator();
+    draw_top_strip();
 }
 
 static void show_msg(const char *line1, const char *line2 = nullptr) {
@@ -345,12 +355,26 @@ static const int GRID_ROWS      = 4;
 static const int TILES_PER_PAGE = GRID_COLS * GRID_ROWS;
 static const int TITLE_GAP      = 6; // space between a cover's bottom edge and its title line
 
+// 1-based chapter number for a spine position — 0 before the first chapter
+// (e.g. a title/copyright page preceding it), and the last chapter's number
+// for any section past it, since get_toc_index_for_spine_index() already
+// resolves to the most recent chapter boundary at or before spine_index.
+static int chapter_number_for_spine(Epub *epub, int spine_index) {
+    if (!epub) return 0;
+    return epub->get_toc_index_for_spine_index(spine_index) + 1;
+}
+
 // Fetches (decoding + SD-caching as needed) and draws the cover for the book
 // at `epub_idx` at (x, y), and refreshes its stored title from the epub's
 // own metadata (scan_for_epubs() only ever seeds it from the filename). A
 // throwaway Epub instance is enough — we only need its title/cover metadata,
-// not a full spine/TOC parse for reading.
-static void render_cover_thumbnail(int epub_idx, int x, int y) {
+// not a full spine/TOC parse for reading. Author/chapter aren't cached in
+// EpubListItem (unlike title) since they're only surfaced for the currently
+// selected book, not worth persisting/growing PositionStore's file format
+// for — the out-params capture them when the caller wants them.
+static void render_cover_thumbnail(int epub_idx, int x, int y,
+                                   std::string *out_author = nullptr,
+                                   int *out_chapter_num = nullptr) {
     static uint8_t cover_buf[COVER_THUMB_BYTES];
     if (epub_idx < 0 || epub_idx >= g_state.num_epubs) return;
 
@@ -363,6 +387,8 @@ static void render_cover_thumbnail(int epub_idx, int x, int y) {
         strncpy(it.title, title.c_str(), MAX_TITLE_SIZE - 1);
         it.title[MAX_TITLE_SIZE - 1] = '\0';
     }
+    if (out_author) *out_author = cover_epub.get_author();
+    if (out_chapter_num) *out_chapter_num = chapter_number_for_spine(&cover_epub, it.current_section);
 
     if (get_cover_thumbnail(&cover_epub, cover_buf))
         g_rend->draw_bitmap_1bpp(x, y, cover_buf, COVER_THUMB_W, COVER_THUMB_H);
@@ -383,7 +409,7 @@ static void render_library() {
     if (g_state.num_epubs == 0) {
         g_rend->draw_text(0, y, "No books found.");  y += lh;
         g_rend->draw_text(0, y, "Copy .epub files to /epub on SD card.");
-        draw_battery_indicator();
+        draw_top_strip();
         display.showPage(framebuf, true);
         return;
     }
@@ -398,6 +424,8 @@ static void render_library() {
 
     int page  = g_sel_epub / TILES_PER_PAGE;
     int first = page * TILES_PER_PAGE;
+    std::string sel_author;
+    int sel_chapter_num = 0;
 
     for (int slot = 0; slot < TILES_PER_PAGE; slot++) {
         int idx = first + slot;
@@ -409,7 +437,9 @@ static void render_library() {
         int tile_y = grid_top + row * tile_h;
         int cover_x = tile_x + (tile_w - COVER_THUMB_W) / 2;
 
-        render_cover_thumbnail(idx, cover_x, tile_y);
+        render_cover_thumbnail(idx, cover_x, tile_y,
+                              idx == g_sel_epub ? &sel_author      : nullptr,
+                              idx == g_sel_epub ? &sel_chapter_num : nullptr);
 
         if (idx == g_sel_epub)
             g_rend->draw_rect(cover_x - 4, tile_y - 4, COVER_THUMB_W + 8, COVER_THUMB_H + 8, 1);
@@ -426,21 +456,28 @@ static void render_library() {
                           tile_y + COVER_THUMB_H + TITLE_GAP, title);
     }
 
-    // Progress for currently selected book
+    // Progress for currently selected book — folding author into this
+    // existing line (rather than adding a new one) since the grid already
+    // uses its full vertical budget across 4 rows. Flush-left, matching the
+    // header above it — no leading indent (that was a leftover cursor-prefix
+    // alignment from the old list layout, not a grid).
     const EpubListItem &sel = g_state.epub_list[g_sel_epub];
-    char prog[48] = "";
+    char prog[80] = "";
+    int  off = 0;
+    if (!sel_author.empty()) {
+        off = snprintf(prog, sizeof(prog), "%s  ", sel_author.c_str());
+        // snprintf returns the length it *would* have written; clamp so a
+        // long author name can't push the offset past the buffer.
+        if (off < 0) off = 0;
+        if (off > (int)sizeof(prog) - 1) off = (int)sizeof(prog) - 1;
+    }
     if (sel.pages_in_current_section > 0)
-        snprintf(prog, sizeof(prog), "  Section %d  Page %d/%d",
-                 sel.current_section + 1,
-                 sel.current_page    + 1,
-                 sel.pages_in_current_section);
+        snprintf(prog + off, sizeof(prog) - off, "Chapter %d  Page %d/%d",
+                 sel_chapter_num, sel.current_page + 1, sel.pages_in_current_section);
     else
-        strncpy(prog, "  (not yet opened)", sizeof(prog) - 1);
-    g_rend->draw_text(0, g_rend->get_page_height() - lh * 2, prog);
-
-    // Button hint
-    g_rend->draw_text(0, g_rend->get_page_height() - lh, "PREV/NEXT: navigate   SELECT: open");
-    draw_battery_indicator();
+        snprintf(prog + off, sizeof(prog) - off, "(not yet opened)");
+    g_rend->draw_text(0, g_rend->get_page_height() - lh, prog);
+    draw_top_strip();
     display.showPage(framebuf, true);
 }
 
@@ -461,7 +498,7 @@ static void render_menu() {
         g_rend->draw_text(0, y, line, i == g_menu_sel);
         y += lh;
     }
-    draw_battery_indicator();
+    draw_top_strip();
     display.showPage(framebuf, true);
 }
 
@@ -675,11 +712,8 @@ static void render_settings() {
 
     snprintf(line, sizeof(line), "%s Back", g_settings_sel == 3 ? ">" : " ");
     g_rend->draw_text(0, y, line, g_settings_sel == 3);
-    y += lh;
 
-    y += lh / 2;
-    g_rend->draw_text(0, y, "PREV/NEXT: navigate   SELECT: change");
-    draw_battery_indicator();
+    draw_top_strip();
     display.showPage(framebuf, true);
 }
 
@@ -742,12 +776,12 @@ static void render_toc() {
         g_rend->draw_text(0, y, "No table of contents available.");
         y += lh + lh / 2;
         g_rend->draw_text(0, y, "SELECT: back");
-        draw_battery_indicator();
+        draw_top_strip();
         display.showPage(framebuf, true);
         return;
     }
 
-    const int footer_lines = 2;
+    const int footer_lines = 1;
     const int avail   = g_rend->get_page_height() - y - lh * footer_lines;
     const int max_vis = avail / lh;
     const int max_chars = max(4, g_rend->get_page_width() / g_rend->get_space_width() - 2);
@@ -775,8 +809,7 @@ static void render_toc() {
         y += lh;
     }
 
-    g_rend->draw_text(0, g_rend->get_page_height() - lh, "PREV/NEXT: navigate   SELECT: open");
-    draw_battery_indicator();
+    draw_top_strip();
     display.showPage(framebuf, true);
 }
 
