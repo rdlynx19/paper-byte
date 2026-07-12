@@ -17,18 +17,19 @@ int WaveshareRenderer::get_page_height() {
 }
 
 int WaveshareRenderer::get_line_height() {
-    // Font20 is 20px tall; add 4px padding
-    return Font20.Height + 4;
+    // +4px padding. Must track _body_font(false), not a fixed Font20 — once
+    // font size is a runtime setting, layout metrics that don't follow it
+    // cause TextBlock to paginate against the wrong glyph size.
+    return _body_font(false)->Height + 4;
 }
 
 int WaveshareRenderer::get_space_width() {
-    return Font20.Width;
+    return _body_font(false)->Width;
 }
 
 int WaveshareRenderer::get_text_width(const char *text, bool bold, bool italic) {
     (void)italic;
-    sFONT *f = bold ? &Font24 : &Font20;
-    return utf8_glyph_count(text) * f->Width;
+    return utf8_glyph_count(text) * _body_font(bold)->Width;
 }
 
 void WaveshareRenderer::draw_pixel(int x, int y, uint8_t color) {
@@ -43,10 +44,9 @@ void WaveshareRenderer::draw_bitmap_1bpp(int x, int y, const uint8_t *bitmap, in
 
 void WaveshareRenderer::draw_text(int x, int y, const char *text, bool bold, bool italic) {
     (void)italic;
-    sFONT *f = bold ? &Font24 : &Font20;
     // Paint_DrawString_UTF8 internally swaps foreground/background when calling
     // Paint_DrawGlyphBitmap, so we pass them pre-swapped here to get black on white.
-    Paint_DrawString_UTF8(_tx(x), _ty(y), text, f, WHITE, BLACK);
+    Paint_DrawString_UTF8(_tx(x), _ty(y), text, _body_font(bold), WHITE, BLACK);
 }
 
 void WaveshareRenderer::draw_rect(int x, int y, int width, int height, uint8_t color) {

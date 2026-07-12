@@ -16,6 +16,7 @@
 #include "src/model/State.h"
 #include "src/display/CoverArt.h"
 #include "src/power/Battery.h"
+#include "src/storage/SettingsStore.h"
 
 size_t getArduinoLoopTaskStackSize() { return 32768; }
 
@@ -38,6 +39,10 @@ int g_page_index    = 0;
 int g_page_count    = 0;
 int g_sel_epub      = 0;            // selected row in library screen
 int g_menu_sel      = 0;            // selected row in menu
+int g_settings_sel  = 0;            // selected row in settings screen
+int g_toc_sel       = 0;            // selected row in table-of-contents screen
+
+ReaderSettings g_settings;          // populated from SD in setup()/fast_resume()
 
 AppState g_app_state = ST_LIBRARY;
 
@@ -208,12 +213,18 @@ static void fast_resume() {
     // Battery gauge (I2C/peripheral state doesn't survive deep sleep)
     g_battery.begin();
 
+    // Settings (regular globals don't survive deep sleep either)
+    SettingsStore::load(&g_settings);
+    g_rend->set_large_font(g_settings.large_font);
+
     // Restore navigation state from RTC memory
     g_app_state   = (AppState)rtc_sleep.app_state;
     g_sel_epub    = rtc_sleep.sel_epub;
     g_spine_index = rtc_sleep.spine_index;
     g_page_index  = rtc_sleep.page_index;
     g_menu_sel    = rtc_sleep.menu_sel;
+    // Settings/TOC aren't worth round-tripping through RTC memory — fall back to Menu
+    if (g_app_state == ST_SETTINGS || g_app_state == ST_TOC) g_app_state = ST_MENU;
 
     // Load epub list from SD (needed for open_epub / render_library)
     PositionStore::load(&g_state);
@@ -433,16 +444,18 @@ static void render_library() {
     display.showPage(framebuf, true);
 }
 
+static const int MENU_ITEM_COUNT = 5;
+
 static void render_menu() {
     g_rend->clear_screen();
     const int lh = g_rend->get_line_height();
-    int y = g_rend->get_page_height() / 2 - lh * 3;
+    int y = g_rend->get_page_height() / 2 - lh * (MENU_ITEM_COUNT + 1);
 
     g_rend->draw_text(0, y, "MENU", true);
     y += lh + lh / 2;
 
-    const char *opts[] = { "Continue Reading", "Go to Library", "Sleep" };
-    for (int i = 0; i < 3; i++) {
+    const char *opts[] = { "Continue Reading", "Go to Library", "Table of Contents", "Settings", "Sleep" };
+    for (int i = 0; i < MENU_ITEM_COUNT; i++) {
         char line[32];
         snprintf(line, sizeof(line), "%s %s", (i == g_menu_sel) ? ">" : " ", opts[i]);
         g_rend->draw_text(0, y, line, i == g_menu_sel);
@@ -590,7 +603,7 @@ static void handle_menu(Btn b) {
     if (b == BTN_LEFT) {
         if (g_menu_sel > 0) { g_menu_sel--; render_menu(); }
     } else if (b == BTN_RIGHT) {
-        if (g_menu_sel < 2) { g_menu_sel++; render_menu(); }
+        if (g_menu_sel < MENU_ITEM_COUNT - 1) { g_menu_sel++; render_menu(); }
     } else if (b == BTN_OK) {
         if (g_menu_sel == 0) {
             // Continue Reading
@@ -604,10 +617,199 @@ static void handle_menu(Btn b) {
             g_sel_epub = 0;
             render_library();
             g_app_state = ST_LIBRARY;
+        } else if (g_menu_sel == 2) {
+            // Table of Contents — default the cursor to the first chapter
+            // (index 1; Back is index 0), not to Back itself.
+            g_toc_sel = (g_epub && g_epub->get_toc_items_count() > 0) ? 1 : 0;
+            render_toc();
+            g_app_state = ST_TOC;
+        } else if (g_menu_sel == 3) {
+            // Settings
+            g_settings_sel = 0;
+            render_settings();
+            g_app_state = ST_SETTINGS;
         } else {
             // Sleep
             save_position();
             enter_deep_sleep();  // never returns
+        }
+    }
+}
+
+// =============================================================================
+// Settings
+// =============================================================================
+
+static const unsigned long SLEEP_TIMEOUT_PRESETS_MIN[] = { 1, 3, 5, 10, 30 };
+static const int SLEEP_TIMEOUT_PRESET_COUNT =
+    sizeof(SLEEP_TIMEOUT_PRESETS_MIN) / sizeof(SLEEP_TIMEOUT_PRESETS_MIN[0]);
+static const int SETTINGS_ITEM_COUNT = 4; // Sleep Timeout, Font Size, Battery, Back
+
+static void render_settings() {
+    g_rend->clear_screen();
+    const int lh = g_rend->get_line_height();
+    int y = 0;
+
+    g_rend->draw_text(0, y, "SETTINGS", true);
+    y += lh + lh / 2;
+
+    char line[48];
+
+    snprintf(line, sizeof(line), "%s Sleep Timeout: %lu min",
+             g_settings_sel == 0 ? ">" : " ", g_settings.sleep_timeout_ms / 60000UL);
+    g_rend->draw_text(0, y, line, g_settings_sel == 0);
+    y += lh;
+
+    snprintf(line, sizeof(line), "%s Font Size: %s",
+             g_settings_sel == 1 ? ">" : " ", g_settings.large_font ? "Large" : "Regular");
+    g_rend->draw_text(0, y, line, g_settings_sel == 1);
+    y += lh;
+
+    if (g_battery.available())
+        snprintf(line, sizeof(line), "%s Battery: %.3fV  %d%%",
+                 g_settings_sel == 2 ? ">" : " ", g_battery.voltage(), g_battery.percent());
+    else
+        snprintf(line, sizeof(line), "%s Battery: unavailable", g_settings_sel == 2 ? ">" : " ");
+    g_rend->draw_text(0, y, line, g_settings_sel == 2);
+    y += lh;
+
+    snprintf(line, sizeof(line), "%s Back", g_settings_sel == 3 ? ">" : " ");
+    g_rend->draw_text(0, y, line, g_settings_sel == 3);
+    y += lh;
+
+    y += lh / 2;
+    g_rend->draw_text(0, y, "PREV/NEXT: navigate   SELECT: change");
+    draw_battery_indicator();
+    display.showPage(framebuf, true);
+}
+
+static void handle_settings(Btn b) {
+    if (b == BTN_LEFT) {
+        if (g_settings_sel > 0) { g_settings_sel--; render_settings(); }
+        return;
+    }
+    if (b == BTN_RIGHT) {
+        if (g_settings_sel < SETTINGS_ITEM_COUNT - 1) { g_settings_sel++; render_settings(); }
+        return;
+    }
+    if (b != BTN_OK) return;
+
+    if (g_settings_sel == 0) {
+        // Cycle sleep timeout through the preset list
+        unsigned long current_min = g_settings.sleep_timeout_ms / 60000UL;
+        int idx = 0;
+        for (int i = 0; i < SLEEP_TIMEOUT_PRESET_COUNT; i++)
+            if (SLEEP_TIMEOUT_PRESETS_MIN[i] == current_min) { idx = i; break; }
+        idx = (idx + 1) % SLEEP_TIMEOUT_PRESET_COUNT;
+        g_settings.sleep_timeout_ms = SLEEP_TIMEOUT_PRESETS_MIN[idx] * 60000UL;
+        SettingsStore::save(g_settings);
+        render_settings();
+    } else if (g_settings_sel == 1) {
+        // Toggle font size. Reused Font24 (not a real bold face) means real
+        // bold/emphasis spans stop standing out while this is on — an
+        // accepted trade-off rather than adding a third font table.
+        g_settings.large_font = !g_settings.large_font;
+        g_rend->set_large_font(g_settings.large_font);
+        SettingsStore::save(g_settings);
+        // Layout was computed at the old font metrics — re-layout the
+        // current chapter so pagination matches what will actually render.
+        if (g_epub && g_parser) load_spine_item(g_spine_index, 0);
+        render_settings();
+    } else if (g_settings_sel == 3) {
+        // Back
+        render_menu();
+        g_app_state = ST_MENU;
+    }
+    // g_settings_sel == 2 (Battery) is informational only — OK does nothing.
+}
+
+// =============================================================================
+// Table of Contents
+// =============================================================================
+
+static void render_toc() {
+    g_rend->clear_screen();
+    const int lh = g_rend->get_line_height();
+    int y = 0;
+
+    g_rend->draw_text(0, y, "TABLE OF CONTENTS", true);
+    y += lh + lh / 2;
+
+    int toc_count   = g_epub ? g_epub->get_toc_items_count() : 0;
+    int total_items = toc_count + 1; // + synthetic "Back" row at index 0
+
+    if (toc_count == 0) {
+        g_rend->draw_text(0, y, "No table of contents available.");
+        y += lh + lh / 2;
+        g_rend->draw_text(0, y, "SELECT: back");
+        draw_battery_indicator();
+        display.showPage(framebuf, true);
+        return;
+    }
+
+    const int footer_lines = 2;
+    const int avail   = g_rend->get_page_height() - y - lh * footer_lines;
+    const int max_vis = avail / lh;
+    const int max_chars = max(4, g_rend->get_page_width() / g_rend->get_space_width() - 2);
+
+    int scroll = g_toc_sel - max_vis / 2;
+    if (scroll < 0) scroll = 0;
+    if (scroll > total_items - max_vis) scroll = max(0, total_items - max_vis);
+
+    for (int i = scroll; i < total_items && y + lh <= g_rend->get_page_height() - lh * footer_lines; i++) {
+        bool sel = (i == g_toc_sel);
+        char line[64];
+
+        if (i == 0) {
+            snprintf(line, sizeof(line), "%s Back", sel ? ">" : " ");
+        } else {
+            char title[48];
+            const std::string &full = g_epub->get_toc_item(i - 1).title;
+            int n = (int)full.size();
+            if (n > max_chars) n = max_chars;
+            strncpy(title, full.c_str(), n);
+            title[n] = '\0';
+            snprintf(line, sizeof(line), "%s %s", sel ? ">" : " ", title);
+        }
+        g_rend->draw_text(0, y, line, sel);
+        y += lh;
+    }
+
+    g_rend->draw_text(0, g_rend->get_page_height() - lh, "PREV/NEXT: navigate   SELECT: open");
+    draw_battery_indicator();
+    display.showPage(framebuf, true);
+}
+
+static void handle_toc(Btn b) {
+    int toc_count   = g_epub ? g_epub->get_toc_items_count() : 0;
+    int total_items = toc_count + 1; // + synthetic "Back" row at index 0
+
+    if (b == BTN_LEFT) {
+        if (g_toc_sel > 0) { g_toc_sel--; render_toc(); }
+    } else if (b == BTN_RIGHT) {
+        if (g_toc_sel < total_items - 1) { g_toc_sel++; render_toc(); }
+    } else if (b == BTN_OK) {
+        if (g_toc_sel == 0) {
+            // Back
+            render_menu();
+            g_app_state = ST_MENU;
+            return;
+        }
+        // Jump to the chapter's spine item, first page. The TOC entry's
+        // in-page anchor (if any) isn't tracked here — landing on the
+        // chapter's first page is a reasonable simplification given this
+        // reader paginates per spine item, not per anchor.
+        int spine_index = g_epub->get_spine_index_for_toc_index(g_toc_sel - 1);
+        show_msg("Loading...");
+        if (load_spine_item(spine_index, 0)) {
+            save_position();
+            render_current_page();
+            display.showPage(framebuf, true);
+            g_app_state = ST_READER;
+        } else {
+            show_msg("Failed to load chapter.");
+            delay(1500);
+            render_toc();
         }
     }
 }
@@ -675,6 +877,10 @@ void setup() {
     // Battery gauge
     g_battery.begin();
 
+    // Settings
+    SettingsStore::load(&g_settings);
+    g_rend->set_large_font(g_settings.large_font);
+
     // Load persisted state and scan for new epubs
     PositionStore::load(&g_state);
     scan_for_epubs();
@@ -701,16 +907,20 @@ void setup() {
 void loop() {
     Btn b = read_button();
     if (b != BTN_NONE) {
+        Serial.printf("Button: %d, state: %d\n", (int)b, (int)g_app_state);
         g_last_activity = millis();
         switch (g_app_state) {
-            case ST_LIBRARY: handle_library(b); break;
-            case ST_READER:  handle_reader(b);  break;
-            case ST_MENU:    handle_menu(b);    break;
+            case ST_LIBRARY:  handle_library(b);  break;
+            case ST_READER:   handle_reader(b);   break;
+            case ST_MENU:     handle_menu(b);     break;
+            case ST_SETTINGS: handle_settings(b); break;
+            case ST_TOC:      handle_toc(b);      break;
         }
+        Serial.println("Button: handler returned");
     }
 
     // Idle timeout — save position then deep sleep
-    if (millis() - g_last_activity > SLEEP_TIMEOUT_MS) {
+    if (millis() - g_last_activity > g_settings.sleep_timeout_ms) {
         save_position();
         enter_deep_sleep();  // never returns
     }

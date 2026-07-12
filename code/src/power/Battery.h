@@ -19,8 +19,9 @@ public:
     // a gauge.
     void update(bool force = false);
 
-    bool available() const { return m_available; }
-    int  percent()   const { return m_percent; }
+    bool  available() const { return m_available; }
+    int   percent()   const { return m_percent; }
+    float voltage()   const { return m_voltage; }
 
 private:
     static const unsigned long UPDATE_INTERVAL_MS = 20000;
@@ -28,5 +29,6 @@ private:
     Adafruit_MAX17048 m_gauge;
     bool          m_available     = false;
     int           m_percent       = 0;
+    float         m_voltage       = 0;
     unsigned long m_last_update_ms = 0;
 };

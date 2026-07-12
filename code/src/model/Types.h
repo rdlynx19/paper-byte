@@ -6,4 +6,4 @@
 enum Btn { BTN_NONE, BTN_LEFT, BTN_RIGHT, BTN_OK };
 
 // App state machine states.
-enum AppState { ST_LIBRARY, ST_READER, ST_MENU };
+enum AppState { ST_LIBRARY, ST_READER, ST_MENU, ST_SETTINGS, ST_TOC };

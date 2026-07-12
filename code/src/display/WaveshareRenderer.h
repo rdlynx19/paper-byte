@@ -25,9 +25,18 @@ public:
     void clear_screen() override;
     bool has_gray() override { return false; }
 
+    // Reader-facing font size toggle. When on, body text renders at Font24
+    // instead of Font20 — reusing the existing bold-heading font rather than
+    // needing a third font table. Trade-off: while this is on, real
+    // bold/emphasis spans (which also render as Font24) stop being visually
+    // distinguishable from regular text.
+    void set_large_font(bool large) { _large_font = large; }
+
 private:
-    int _epd_w;
-    int _epd_h;
+    int  _epd_w;
+    int  _epd_h;
+    bool _large_font = false;
+    inline sFONT *_body_font(bool bold) { return (bold || _large_font) ? &Font24 : &Font20; }
     // translate content-area-relative coords to display coords
     inline int _tx(int x) { return margin_left + x; }
     inline int _ty(int y) { return margin_top  + y; }

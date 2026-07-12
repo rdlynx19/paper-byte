@@ -54,6 +54,7 @@ void Battery::update(bool force) {
     if (pct < 0)   pct = 0;
     if (pct > 100) pct = 100;
     m_percent = (int)(pct + 0.5f);
+    m_voltage = voltage;
 
     Serial.printf("Battery: %.3f V, %d%%\n", voltage, m_percent);
 }
