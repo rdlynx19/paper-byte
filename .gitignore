@@ -1,0 +1,16 @@
+# Arduino IDE / arduino-cli build output
+build/
+*.hex
+*.elf
+*.map
+
+# Editor / OS cruft
+.DS_Store
+*.swp
+*~
+
+# KiCad backups
+*.kicad_pcb-bak
+*.kicad_sch-bak
+fp-info-cache
+_autosave-*
