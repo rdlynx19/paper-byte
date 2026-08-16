@@ -1,21 +1,22 @@
 # Paper Byte
 
-An ESP32-S3 e-reader, built from scratch: custom PCB, 3D-printed case, and firmware that unzips and renders EPUBs on a 5" e-paper display.
+Paper Byte is ESP32-S3 based e-reader,
+This repository contains the PCB design files, the CAD files for the case, and the firmware to read and parse EPUB files. 
 
-Full write-up (design story, photos, schematics): https://pushkardave.com/paper-byte
+For a more detailed guide, visit my blog post - [PaperByte](https://pushkardave.com/paper-byte)
 
-## What it does
+## Overview
 
 Paper Byte parses EPUB files straight off an SD card and renders them on an e-ink screen, with three-button navigation (prev / next / select) driving a small state machine: Library, Reader, Menu, Settings, Table of Contents, and a Wi-Fi file transfer mode.
 
-- Unzips and parses EPUBs (XHTML + metadata) with no external OS or filesystem — just the ESP32 and an SD card
+- Unzips and parses EPUBs (XHTML + metadata) from an SD card
 - Reflowable text layout: word-wrap, adjustable font size, margins
 - Cover art extraction and a library grid with cached thumbnails
 - Table of contents / chapter jump
 - Persistent reading position per book, survives power loss
-- Battery percentage from a MAX17048 fuel gauge, not voltage-guessing
-- Sleeps to the book's cover at zero power (e-ink is bistable) and wakes straight back into the reader
-- Wireless library management: the device hosts its own Wi-Fi access point and a small HTTP page to upload/delete EPUBs, since the SD card isn't reachable once the case is closed
+- Battery percentage from a MAX17048 fuel gauge
+- Sleeps to the book's cover at zero power and wakes straight back into the reader
+- Wireless library management: the device hosts its own Wi-Fi access point and a small HTTP page to upload/delete EPUBs
 
 ## Hardware
 
@@ -28,11 +29,9 @@ Paper Byte parses EPUB files straight off an SD card and renders them on an e-in
 | 3 tactile switches | Prev / Next / Select |
 | 1S LiPo battery | Power, charged over the Feather's USB-C |
 
-A custom through-hole PCB (`pcb/`) ties the Feather, SD module, and e-paper HAT together on shared SPI buses, eliminating almost all point-to-point wiring. The 3D-printed enclosure is in `cad/`.
+A custom through-hole PCB (`pcb/`) ties the Feather, SD module, and e-paper HAT together on SPI buses. The 3D-printed enclosure is in `cad/`.
 
-The full design story — including an earlier Raspberry Pi Zero 2W attempt that got abandoned for being too clunky to fit in a case — is in the [write-up](https://pushkardave.com/paper-byte).
-
-## Software architecture
+## Software Architecture
 
 ```
 EPUB (zip) -> unzip/parse chapter -> word-wrap into pages sized to the display -> render to e-paper
@@ -50,33 +49,13 @@ EPUB (zip) -> unzip/parse chapter -> word-wrap into pages sized to the display -
 - `power/` — MAX17048 battery fuel gauge wrapper
 - `network/` — `FileServer`, the AP-mode Wi-Fi file manager
 
-## Building / flashing
 
-Arduino IDE or `arduino-cli`, targeting:
+## Wireless File Manager
 
-```
-esp32:esp32:adafruit_feather_esp32s3:PartitionScheme=huge_app
-```
+From the Library menu, entering File Transfer mode starts a Wi-Fi access point (SSID/password in `code/src/config.h`) and a small web page for uploading/deleting EPUBs. Idle-timeout sleep is suspended while the mode is active; exiting tears down Wi-Fi and re-scans the library.
 
-Required libraries (beyond the ESP32 Arduino core, which already includes `WiFi`, `WebServer`, `SD`, `SPI`, `Wire`):
+## Future Work
 
-- `Adafruit_MAX1704X` (battery fuel gauge)
-
-Open `code/code.ino`, select the board/partition scheme above, and flash.
-
-## Wireless file manager
-
-From the Library menu, entering File Transfer mode starts a Wi-Fi access point (SSID/password in `code/src/config.h`) and a small web page for uploading/deleting EPUBs — no need to open the case to manage books. Idle-timeout sleep is suspended while the mode is active; exiting tears down Wi-Fi and re-scans the library.
-
-## Status / roadmap
-
-Actively developed. Notably still missing:
 - Partial e-ink refresh for page turns (currently a full refresh every page)
 - Bookmarks
 - A dedicated low-battery/charging screen
-
-See `esp32-eink-reader-features.md` for the full feature checklist and `wifi-file-manager-plan.md` for the file-manager design doc.
-
-## License
-
-GPL-3.0 — see [LICENSE](LICENSE).
