@@ -9,6 +9,7 @@
 #endif
 
 class ZipFile;
+namespace tinyxml2 { class XMLElement; }
 
 class EpubTocEntry
 {
@@ -43,6 +44,11 @@ private:
   bool find_content_opf_file(ZipFile &zip, std::string &content_opf_file);
   bool parse_content_opf(ZipFile &zip, std::string &content_opf_file);
   bool parse_toc_ncx_file(ZipFile &zip);
+  // Recursively walks navPoint children (depth-first, document order),
+  // appending one EpubTocEntry per node with its real nesting depth in
+  // `level` — previously this only walked top-level siblings and hardcoded
+  // level to 0, silently dropping every nested sub-heading from the TOC.
+  void parse_nav_points(tinyxml2::XMLElement *parent, int level);
 
 public:
   Epub(const std::string &path);

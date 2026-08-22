@@ -78,7 +78,17 @@ parameter:
 static void EPD_5in0_ReadBusy(void)
 {
     Debug("e-Paper busy\r\n");
+    unsigned long start = millis();
     while(DEV_Digital_Read(EPD_BUSY_PIN) == 1) {      //LOW: idle, HIGH: busy
+        // Bounded: an unbounded wait here previously froze the whole app
+        // (button polling included) if BUSY never dropped. Give up after a
+        // few seconds and log it rather than hang forever — a stuck-BUSY
+        // refresh is a display glitch to investigate, not a reason to lock
+        // up the device.
+        if (millis() - start > 3000) {
+            Serial.println("EPD_5in0: BUSY pin still high after 3s, giving up wait");
+            return;
+        }
         DEV_Delay_ms(1);
     }
     Debug("e-Paper busy release\r\n");
@@ -307,7 +317,7 @@ void EPD_5in0_Display_Partial(const UBYTE *Image, UWORD Xstart, UWORD Ystart, UW
 	UDOUBLE IMAGE_COUNTER = Width * (Yend-Ystart);
 
     Xend -= 1;
-	Yend -= 1;	
+	Yend -= 1;
 
     EPD_5in0_Reset();
 

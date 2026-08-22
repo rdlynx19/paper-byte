@@ -1,5 +1,6 @@
 #include "FileServer.h"
 #include <SD.h>
+#include <Update.h>
 
 FileServer g_file_server;
 
@@ -90,6 +91,7 @@ bool FileServer::begin() {
     m_server.on("/download", HTTP_GET, [this]() { handle_download(); });
     m_server.on("/delete", HTTP_POST, [this]() { handle_delete(); });
     m_server.on("/upload", HTTP_POST, [this]() { handle_upload_done(); }, [this]() { handle_upload_data(); });
+    m_server.on("/update", HTTP_POST, [this]() { handle_ota_done(); }, [this]() { handle_ota_data(); });
     m_server.begin();
     return true;
 }
@@ -114,7 +116,14 @@ void FileServer::handle_root() {
         "<title>Paper-Byte</title></head><body>"
         "<h2>Paper-Byte &mdash; " + html_escape(dir) + "</h2>"
         "<form method='POST' action='/upload?dir=" + dir_url + "' enctype='multipart/form-data'>"
-        "<input type='file' name='file'> <input type='submit' value='Upload here'></form><hr>";
+        "<input type='file' name='file'> <input type='submit' value='Upload here'></form>"
+        "<hr>"
+        "<details><summary>Firmware update</summary>"
+        "<form method='POST' action='/update' enctype='multipart/form-data' "
+        "onsubmit=\"return confirm('Flash this .bin as new firmware and reboot? "
+        "Make sure it was built for this board.');\">"
+        "<input type='file' name='firmware' accept='.bin'> "
+        "<input type='submit' value='Flash firmware'></form></details><hr>";
 
     if (dir != "/") {
         html += "<p><a href='/?dir=" + url_encode(parent_of(dir)) + "'>.. (up)</a></p>";
@@ -214,5 +223,47 @@ void FileServer::handle_upload_data() {
         if (upload_file) upload_file.write(upload.buf, upload.currentSize);
     } else if (upload.status == UPLOAD_FILE_END || upload.status == UPLOAD_FILE_ABORTED) {
         if (upload_file) upload_file.close();
+    }
+}
+
+// Responds to the /update POST once the whole .bin has streamed through
+// handle_ota_data(). Only reboots on success — a failed flash leaves the
+// currently-running firmware untouched and in charge, so a bad upload is a
+// "try again" situation, not a bricked device.
+void FileServer::handle_ota_done() {
+    bool ok = !Update.hasError();
+    m_server.sendHeader("Connection", "close");
+    m_server.sendHeader("Cache-Control", "no-store");
+    m_server.send(200, "text/plain",
+                  ok ? "Update OK, rebooting..." : "Update FAILED, device not rebooted (see serial log)");
+    if (ok) {
+        delay(500);
+        ESP.restart();
+    }
+}
+
+// Streams the uploaded .bin straight into the inactive OTA partition via
+// the ESP32 core's Update library — no SD card or extra buffering involved.
+void FileServer::handle_ota_data() {
+    HTTPUpload &upload = m_server.upload();
+
+    if (upload.status == UPLOAD_FILE_START) {
+        Serial.printf("OTA: starting flash of %s\n", upload.filename.c_str());
+        if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+            Update.printError(Serial);
+        }
+    } else if (upload.status == UPLOAD_FILE_WRITE) {
+        if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+            Update.printError(Serial);
+        }
+    } else if (upload.status == UPLOAD_FILE_END) {
+        if (Update.end(true)) {
+            Serial.printf("OTA: flashed %u bytes, rebooting into it next\n", upload.totalSize);
+        } else {
+            Update.printError(Serial);
+        }
+    } else if (upload.status == UPLOAD_FILE_ABORTED) {
+        Update.abort();
+        Serial.println("OTA: upload aborted");
     }
 }

@@ -46,9 +46,11 @@ public:
   }
   ~TextBlock()
   {
+    // Spans are allocated via model_alloc() (PsramAlloc.h) in add_span(),
+    // not `new[]` — matching free(), not delete[].
     for (auto span : spans)
     {
-      delete[] span;
+      free((void *)span);
     }
   }
   void set_style(BLOCK_STYLE style)

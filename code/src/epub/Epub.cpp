@@ -233,9 +233,18 @@ bool Epub::parse_toc_ncx_file(ZipFile &zip)
     return false;
   }
 
-  auto navPoint = navMap->FirstChildElement("navPoint");
+  parse_nav_points(navMap, 0);
+  return true;
+}
 
-  // Fills toc_index map
+void Epub::parse_nav_points(tinyxml2::XMLElement *parent, int level)
+{
+  // Defensive cap on recursion depth — a real book's TOC is a handful of
+  // levels deep at most; this just guards against a malformed or
+  // pathologically nested NCX rather than reflecting any real limit.
+  if (level > 8) return;
+
+  auto navPoint = parent->FirstChildElement("navPoint");
   while (navPoint)
   {
     std::string title = "";
@@ -259,12 +268,16 @@ bool Epub::parse_toc_ncx_file(ZipFile &zip)
           anchor = href.substr(pos + 1);
           href   = href.substr(0, pos);
         }
-        m_toc.push_back(EpubTocEntry(title, href, anchor, 0));
+        m_toc.push_back(EpubTocEntry(title, href, anchor, level));
       }
     }
+
+    // Recurse before moving to the next sibling, so a parent's entry is
+    // always immediately followed by all of its own descendants in m_toc
+    // (depth-first, document order) before the next top-level entry.
+    parse_nav_points(navPoint, level + 1);
     navPoint = navPoint->NextSiblingElement("navPoint");
   }
-  return true;
 }
 
 Epub::Epub(const std::string &path) : m_path(path)

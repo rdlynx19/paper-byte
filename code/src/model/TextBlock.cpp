@@ -41,9 +41,13 @@ static int skip_whitespace(const char *html, int index, int length)
 void TextBlock::add_span(const char *span, bool is_bold, bool is_italic)
 {
   // adding a span to text block
-  // make a copy of the text as we'll modify it
+  // make a copy of the text as we'll modify it — PSRAM-backed (PsramAlloc.h,
+  // included transitively via TextBlock.h -> Block.h): this is the actual
+  // paragraph text, the single biggest contributor to a chapter's memory
+  // footprint, and there's no reason it needs to live in the small
+  // internal-DRAM heap.
   int length = strlen(span);
-  char *text = new char[length + 1];
+  char *text = (char *)model_alloc(length + 1);
   strcpy(text, span);
   spans.push_back(text);
   // work out where each word is in the span

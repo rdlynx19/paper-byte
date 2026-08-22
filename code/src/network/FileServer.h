@@ -34,6 +34,9 @@ private:
     void handle_delete();     // POST /delete  (dir, file)      — remove a file
     void handle_upload_done();
     void handle_upload_data(); // POST /upload?dir=<path>       — add a file
+
+    void handle_ota_done();
+    void handle_ota_data();    // POST /update                  — flash new firmware
 };
 
 extern FileServer g_file_server;

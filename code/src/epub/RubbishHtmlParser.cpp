@@ -66,6 +66,20 @@ RubbishHtmlParser::~RubbishHtmlParser()
   {
     delete block;
   }
+  // `pages` (populated by layout(), see below) was never freed here — every
+  // chapter transition leaked every Page (and, since Page's own destructor
+  // never got to run, every PageLine/PageImage each one held) for the
+  // chapter just being left. Harmless for the first few chapters, but it
+  // compounds across a whole reading session: by the time a page-heavy
+  // chapter is reached, everything already read has piled up unreleased,
+  // and on a MCU with a genuinely small heap that's enough to make the
+  // next allocation fail outright — operator new has nowhere to throw to on
+  // this build (exceptions off), so that failure surfaces as std::terminate
+  // -> abort(), a "panic/exception ... abort() was called" reset.
+  for (auto page : pages)
+  {
+    delete page;
+  }
 }
 
 bool RubbishHtmlParser::VisitEnter(const tinyxml2::XMLElement &element, const tinyxml2::XMLAttribute *firstAttribute)

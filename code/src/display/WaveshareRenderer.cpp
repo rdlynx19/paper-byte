@@ -49,6 +49,12 @@ void WaveshareRenderer::draw_text(int x, int y, const char *text, bool bold, boo
     Paint_DrawString_UTF8(_tx(x), _ty(y), text, _body_font(bold), WHITE, BLACK);
 }
 
+void WaveshareRenderer::draw_text_inverted(int x, int y, const char *text, bool bold) {
+    // Exact color swap of draw_text() above — flips which color ends up as
+    // glyph ink vs. cell fill, giving white-on-black instead of black-on-white.
+    Paint_DrawString_UTF8(_tx(x), _ty(y), text, _body_font(bold), BLACK, WHITE);
+}
+
 void WaveshareRenderer::draw_rect(int x, int y, int width, int height, uint8_t color) {
     Paint_DrawRectangle(_tx(x), _ty(y),
                         _tx(x) + width, _ty(y) + height,

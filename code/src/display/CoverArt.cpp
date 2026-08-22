@@ -313,6 +313,8 @@ void invalidate_cover_cache(const std::string &epub_path) {
     char path[64];
     cover_cache_path(epub_path, COVER_THUMB_W, COVER_THUMB_H, path, sizeof(path));
     remove(path);
+    cover_cache_path(epub_path, COVER_FEATURED_W, COVER_FEATURED_H, path, sizeof(path));
+    remove(path);
     cover_cache_path(epub_path, COVER_SLEEP_W, COVER_SLEEP_H, path, sizeof(path));
     remove(path);
 }

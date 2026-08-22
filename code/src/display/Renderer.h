@@ -25,6 +25,12 @@ public:
     // drawing
     virtual void draw_pixel(int x, int y, uint8_t color) = 0;
     virtual void draw_text(int x, int y, const char *text, bool bold = false, bool italic = false) = 0;
+    // White ink on an opaque black background — for a full-row selection
+    // highlight bar instead of a "> " cursor prefix. Unlike draw_text(),
+    // this paints every pixel in each glyph's cell (not just the ink), so
+    // combined with a fill_rect() of the same row it produces a clean
+    // inverted bar with no gaps between characters.
+    virtual void draw_text_inverted(int x, int y, const char *text, bool bold = false) = 0;
     virtual void draw_rect(int x, int y, int width, int height, uint8_t color = 0) = 0;
     virtual void fill_rect(int x, int y, int width, int height, uint8_t color = 0) = 0;
     virtual void draw_triangle(int x0, int y0, int x1, int y1, int x2, int y2, uint8_t color) = 0;

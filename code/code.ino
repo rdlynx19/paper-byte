@@ -79,6 +79,14 @@ static void init_buttons() {
 
 static const unsigned long LONG_PRESS_MS = 600;
 
+// Post-fire cooldown per button. Contact bounce itself is filtered in
+// hardware (0.1uF caps from each active pin to ground), so this only needs
+// to guard against a single mechanical/electrical glitch double-firing —
+// it does NOT need to be long enough to also serve as a debounce window.
+// Keeping it short matters: PREV/NEXT are the rapid-repeat page-turn
+// buttons, and a real fast tap-tap can be well under 200ms apart.
+static const unsigned long BUTTON_COOLDOWN_MS = 50;
+
 // SELECT distinguishes a short tap (BTN_OK) from a held press (BTN_OK_LONG —
 // used to reach the Library menu). This means BTN_OK now fires on release
 // rather than on press, so its action can be suppressed if the hold turns
@@ -89,7 +97,14 @@ static const unsigned long LONG_PRESS_MS = 600;
 // they're the rapid-repeat page-turn buttons and don't need this.
 static Btn read_button() {
     static bool lp = false, ln = false, ls = false;
-    static unsigned long quiet_until = 0;
+    // Each button gets its own cooldown timer — these used to share one
+    // `quiet_until`, which meant a fresh press of one button could get
+    // silently swallowed by another button's still-running cooldown (e.g.
+    // a quick NEXT-NEXT double-tap, or NEXT immediately followed by
+    // SELECT).
+    static unsigned long quiet_until_left  = 0;
+    static unsigned long quiet_until_right = 0;
+    static unsigned long quiet_until_ok    = 0;
     static unsigned long select_press_start = 0;
     static bool select_long_fired = false;
 
@@ -99,10 +114,8 @@ static Btn read_button() {
 
     Btn b = BTN_NONE;
 
-    if (millis() >= quiet_until) {
-        if      (cp && !lp) { b = BTN_LEFT;  quiet_until = millis() + 200; }
-        else if (cn && !ln) { b = BTN_RIGHT; quiet_until = millis() + 200; }
-    }
+    if      (cp && !lp && millis() >= quiet_until_left)  { b = BTN_LEFT;  quiet_until_left  = millis() + BUTTON_COOLDOWN_MS; }
+    else if (cn && !ln && millis() >= quiet_until_right) { b = BTN_RIGHT; quiet_until_right = millis() + BUTTON_COOLDOWN_MS; }
 
     if (cs && !ls) {
         select_press_start = millis();
@@ -112,9 +125,9 @@ static Btn read_button() {
         select_long_fired = true;
         b = BTN_OK_LONG;
     } else if (!cs && ls) {
-        if (!select_long_fired && millis() >= quiet_until) {
+        if (!select_long_fired && millis() >= quiet_until_ok) {
             b = BTN_OK;
-            quiet_until = millis() + 200;
+            quiet_until_ok = millis() + BUTTON_COOLDOWN_MS;
         }
         select_press_start = 0;
         select_long_fired  = false;
@@ -331,8 +344,15 @@ static void fast_resume() {
 // Spine / parser management
 // =============================================================================
 
-// Parse and layout spine[spine_index].  Does NOT replace g_parser on failure
-// so the caller can try alternate spine indices without losing current content.
+// Parse and layout spine[spine_index]. Frees the *previous* g_parser before
+// building the new one (see below), so a failed load leaves g_parser null
+// rather than falling back to stale content — every current caller already
+// either retries with a different spine index in a loop before next
+// redrawing anything, or shows its own distinct message on total failure,
+// so nothing actually depends on the old content surviving a failed load.
+// render_current_page() already null-checks g_parser defensively, so a
+// transient null between calls can't crash — worst case is a harmless
+// redundant refresh of whatever's already on screen.
 static bool load_spine_item(int spine_index, int page_index) {
     if (!g_epub) return false;
     if (spine_index < 0 || spine_index >= g_epub->get_spine_items_count()) return false;
@@ -345,6 +365,16 @@ static bool load_spine_item(int spine_index, int page_index) {
     size_t slash = path.rfind('/');
     std::string dir = slash != std::string::npos ? path.substr(0, slash + 1) : "";
 
+    // Free the outgoing chapter's parsed pages/blocks *before* building the
+    // incoming one, not after. Keeping both alive at once (the old order)
+    // doubles peak heap right at the moment a page-heavy chapter's own
+    // layout() is already the single biggest heap consumer in the app —
+    // confirmed as the actual crash site via a decoded panic backtrace:
+    // abort() inside a fopen() call in save_position(), immediately after
+    // a successful chapter-boundary load_spine_item() — i.e. exactly here.
+    delete g_parser;
+    g_parser = nullptr;
+
     RubbishHtmlParser *np = new RubbishHtmlParser((const char *)html, (int)html_sz, dir);
     free(html);
 
@@ -353,8 +383,6 @@ static bool load_spine_item(int spine_index, int page_index) {
     int pc = np->get_page_count();
     if (pc == 0) { delete np; return false; }
 
-    // Commit — only here do we touch the live g_parser
-    delete g_parser;
     g_parser      = np;
     g_spine_index = spine_index;
     g_page_count  = pc;
@@ -368,18 +396,30 @@ static bool load_spine_item(int spine_index, int page_index) {
 // Screen renderers
 // =============================================================================
 
-// Chapter number (left) + battery icon/percentage (right), drawn in the top
-// margin band — a blank buffer zone above the content area on every screen —
-// so it never displaces text or affects pagination. Safe to call from any
-// screen renderer. Chapter number only shows while a book is open (Reader,
-// Menu, Settings, TOC); it's naturally absent on the Library screen since
-// g_epub is null there.
+// Chapter number + title (left) and battery icon/percentage (right), drawn
+// in the top margin band — a blank buffer zone above the content area on
+// every screen — so it never displaces text or affects pagination. Safe to
+// call from any screen renderer. Chapter label only shows while a book is
+// open (Reader, Menu, Settings, TOC); it's naturally absent on the Library
+// screen since g_epub is null there.
 static void draw_top_strip() {
     const int y = -26; // within the top margin band, above y=0 content
 
     if (g_epub) {
-        char chapter[16];
-        snprintf(chapter, sizeof(chapter), "Chapter %d", chapter_number_for_spine(g_epub, g_spine_index));
+        int toc_idx = g_epub->get_toc_index_for_spine_index(g_spine_index);
+        int chapter_num = count_toplevel_toc_entries_upto(g_epub, toc_idx);
+        char chapter[64];
+        if (toc_idx >= 0 && !g_epub->get_toc_item(toc_idx).title.empty())
+            snprintf(chapter, sizeof(chapter), "Chapter %d: %s", chapter_num, g_epub->get_toc_item(toc_idx).title.c_str());
+        else
+            snprintf(chapter, sizeof(chapter), "Chapter %d", chapter_num);
+
+        // Truncate so a long chapter title can't run into the battery
+        // indicator on the right — reserves a fixed margin for it whether
+        // or not a battery gauge is actually present, simpler than
+        // computing the exact reserved width conditionally.
+        int max_chars = max(4, (g_rend->get_page_width() - 100) / g_rend->get_space_width());
+        if ((int)strlen(chapter) > max_chars) chapter[max_chars] = '\0';
         g_rend->draw_text(0, y - 2, chapter);
     }
 
@@ -402,6 +442,21 @@ static void draw_top_strip() {
         g_rend->fill_rect(x + 2, y + 2, fill_w, icon_h - 4, 1);
 }
 
+// Shared selection-row renderer for the menu-style screens (Menu, Settings,
+// Library menu, TOC): a full-width inverted bar for the selected row
+// instead of a "> " cursor prefix — reads more clearly at a glance on
+// e-ink than a leading cursor glyph, and doesn't need a font that renders
+// bold clearly to convey selection.
+static void draw_row(int y, const char *text, bool selected) {
+    const int lh = g_rend->get_line_height();
+    if (selected) {
+        g_rend->fill_rect(0, y - 2, g_rend->get_page_width(), lh, 1);
+        g_rend->draw_text_inverted(4, y, text);
+    } else {
+        g_rend->draw_text(4, y, text);
+    }
+}
+
 static void render_current_page() {
     if (!g_parser || !g_rend || !g_epub) return;
     g_rend->clear_screen();
@@ -417,13 +472,27 @@ static void show_msg(const char *line1, const char *line2 = nullptr) {
     display.showPage(framebuf, true);
 }
 
-// Library is a grid of book tiles (cover + title), GRID_COLS x GRID_ROWS per
-// page, paginated by g_sel_epub / TILES_PER_PAGE — the same "page jumps when
-// the cursor crosses its boundary" behaviour the old scrolling list had.
-static const int GRID_COLS      = 2;
-static const int GRID_ROWS      = 4;
-static const int TILES_PER_PAGE = GRID_COLS * GRID_ROWS;
-static const int TITLE_GAP      = 6; // space between a cover's bottom edge and its title line
+// Library is a carousel: a small preview of the previous/next book on
+// either side of a large "featured" cover for the current selection.
+// LEFT/RIGHT shift which index is featured — circular, unlike every other
+// list screen in this app: past the last book wraps to the first, and vice
+// versa (see handle_library()).
+static const int CAROUSEL_GAP = 14; // horizontal gap between covers
+static const int TITLE_GAP    = 6;  // space between a cover's bottom edge and its caption
+
+// Counts level-0 (top-level) TOC entries up to and including toc_index —
+// turns a flat TOC position into a "chapter number" that ignores nested
+// sub-headings, so those share their parent chapter's number rather than
+// incrementing it. Matters since the NCX parser now recurses into nested
+// navPoints (see Epub::parse_nav_points) instead of dropping them, so
+// toc_index alone no longer lines up with "which chapter" a reader means.
+static int count_toplevel_toc_entries_upto(Epub *epub, int toc_index) {
+    if (!epub || toc_index < 0) return 0;
+    int count = 0;
+    for (int i = 0; i <= toc_index; i++)
+        if (epub->get_toc_item(i).level == 0) count++;
+    return count;
+}
 
 // 1-based chapter number for a spine position — 0 before the first chapter
 // (e.g. a title/copyright page preceding it), and the last chapter's number
@@ -431,7 +500,7 @@ static const int TITLE_GAP      = 6; // space between a cover's bottom edge and 
 // resolves to the most recent chapter boundary at or before spine_index.
 static int chapter_number_for_spine(Epub *epub, int spine_index) {
     if (!epub) return 0;
-    return epub->get_toc_index_for_spine_index(spine_index) + 1;
+    return count_toplevel_toc_entries_upto(epub, epub->get_toc_index_for_spine_index(spine_index));
 }
 
 // Fetches (decoding + SD-caching as needed) and draws the cover for the book
@@ -464,17 +533,47 @@ static void render_cover_thumbnail(int epub_idx, int x, int y,
         g_rend->draw_bitmap_1bpp(x, y, cover_buf, COVER_THUMB_W, COVER_THUMB_H);
 }
 
+// Same as render_cover_thumbnail() above, at the carousel's larger featured
+// size — a separate function (rather than a shared one parameterized by
+// size) matching how this file already treats different cover sizes as
+// distinct call sites (see also render_sleep_cover()), not a case to force
+// into one generic helper for only two callers.
+static void render_cover_featured(int epub_idx, int x, int y,
+                                  std::string *out_author = nullptr,
+                                  int *out_chapter_num = nullptr) {
+    static uint8_t cover_buf[COVER_FEATURED_BYTES];
+    if (epub_idx < 0 || epub_idx >= g_state.num_epubs) return;
+
+    EpubListItem &it = g_state.epub_list[epub_idx];
+    Epub cover_epub(it.path);
+    if (!cover_epub.load()) return;
+
+    const std::string &title = cover_epub.get_title();
+    if (!title.empty()) {
+        strncpy(it.title, title.c_str(), MAX_TITLE_SIZE - 1);
+        it.title[MAX_TITLE_SIZE - 1] = '\0';
+    }
+    if (out_author) *out_author = cover_epub.get_author();
+    if (out_chapter_num) *out_chapter_num = chapter_number_for_spine(&cover_epub, it.current_section);
+
+    if (get_cover_featured(&cover_epub, cover_buf))
+        g_rend->draw_bitmap_1bpp(x, y, cover_buf, COVER_FEATURED_W, COVER_FEATURED_H);
+}
+
 static void render_library() {
     g_rend->clear_screen();
     const int lh = g_rend->get_line_height();
     int y = 0;
 
-    // Header
-    char hdr[48];
-    snprintf(hdr, sizeof(hdr), "Pushkar's Library - %d books", g_state.num_epubs);
-    g_rend->draw_text(0, y, hdr, true);
+    // Header — title and book count as separate lines, rather than one
+    // combined "Pushkar's Library - N books" line.
+    g_rend->draw_text(0, y, "Pushkar's Library", true);
+    y += lh;
+    char count_line[16];
+    snprintf(count_line, sizeof(count_line), "%d books", g_state.num_epubs);
+    g_rend->draw_text(0, y, count_line);
     y += lh + lh / 2;
-    const int grid_top = y;
+    const int header_bottom = y;
 
     if (g_state.num_epubs == 0) {
         g_rend->draw_text(0, y, "No books found.");  y += lh;
@@ -484,69 +583,77 @@ static void render_library() {
         return;
     }
 
-    const int tile_w = g_rend->get_page_width() / GRID_COLS;
-    // Content-sized, not stretched to fill the available grid height — the
-    // panel's logical canvas is portrait (rotated 90 degrees), so it has far
-    // more vertical room than a 2-row grid needs; stretching tiles to fill it
-    // just opens a big gap between rows instead of showing more books.
-    const int tile_h = COVER_THUMB_H + TITLE_GAP + lh;
-    const int max_title_chars = max(4, tile_w / g_rend->get_space_width() - 1);
+    // Vertically center the carousel + caption block in the remaining
+    // space below the header, rather than pinning it right underneath —
+    // the tall portrait screen leaves a lot of otherwise-empty room below
+    // a top-anchored block. block_h uses 3 caption lines as a worst-case
+    // estimate (title + author + progress); books without an author (only
+    // 2 lines actually drawn) end up very slightly high rather than
+    // perfectly centered — a minor, acceptable approximation.
+    const int block_h     = COVER_FEATURED_H + TITLE_GAP + 3 * lh;
+    const int remaining   = g_rend->get_page_height() - header_bottom;
+    const int carousel_top = header_bottom + max(0, (remaining - block_h) / 2);
 
-    int page  = g_sel_epub / TILES_PER_PAGE;
-    int first = page * TILES_PER_PAGE;
+    // Small previous/next previews flank the large featured cover.
+    // COVER_THUMB_W + CAROUSEL_GAP + COVER_FEATURED_W + CAROUSEL_GAP +
+    // COVER_THUMB_W is an exact fit for the 492px content width at the
+    // default margins (see CoverArt.h) — first-pass numbers, worth a nudge
+    // once seen on the actual panel.
+    const int center_x     = COVER_THUMB_W + CAROUSEL_GAP;
+    const int side_x_right = center_x + COVER_FEATURED_W + CAROUSEL_GAP;
+    const int side_y       = carousel_top + (COVER_FEATURED_H - COVER_THUMB_H) / 2;
+
+    // Wraps around, matching handle_library()'s circular navigation — with
+    // exactly 2 books, prev and next both correctly land on "the other
+    // one." With exactly 1, there's nothing to preview on either side.
+    if (g_state.num_epubs > 1) {
+        int prev_idx = (g_sel_epub - 1 + g_state.num_epubs) % g_state.num_epubs;
+        int next_idx = (g_sel_epub + 1) % g_state.num_epubs;
+        render_cover_thumbnail(prev_idx, 0, side_y);
+        render_cover_thumbnail(next_idx, side_x_right, side_y);
+    }
+
     std::string sel_author;
     int sel_chapter_num = 0;
+    render_cover_featured(g_sel_epub, center_x, carousel_top, &sel_author, &sel_chapter_num);
 
-    for (int slot = 0; slot < TILES_PER_PAGE; slot++) {
-        int idx = first + slot;
-        if (idx >= g_state.num_epubs) break;
+    y = carousel_top + COVER_FEATURED_H + TITLE_GAP;
 
-        int col = slot % GRID_COLS;
-        int row = slot / GRID_COLS;
-        int tile_x = col * tile_w;
-        int tile_y = grid_top + row * tile_h;
-        int cover_x = tile_x + (tile_w - COVER_THUMB_W) / 2;
-
-        render_cover_thumbnail(idx, cover_x, tile_y,
-                              idx == g_sel_epub ? &sel_author      : nullptr,
-                              idx == g_sel_epub ? &sel_chapter_num : nullptr);
-
-        if (idx == g_sel_epub)
-            g_rend->draw_rect(cover_x - 4, tile_y - 4, COVER_THUMB_W + 8, COVER_THUMB_H + 8, 1);
-
-        const EpubListItem &it = g_state.epub_list[idx];
-        char title[48];
-        int  n = (int)strlen(it.title);
-        if (n > max_title_chars) n = max_title_chars;
-        strncpy(title, it.title, n);
-        title[n] = '\0';
-        // Not bold: get_space_width() below (used for centering) is always
-        // Font20's width, which would under-measure a bold (Font24) title.
-        g_rend->draw_text(tile_x + (tile_w - (int)strlen(title) * g_rend->get_space_width()) / 2,
-                          tile_y + COVER_THUMB_H + TITLE_GAP, title);
-    }
-
-    // Progress for currently selected book — folding author into this
-    // existing line (rather than adding a new one) since the grid already
-    // uses its full vertical budget across 4 rows. Flush-left, matching the
-    // header above it — no leading indent (that was a leftover cursor-prefix
-    // alignment from the old list layout, not a grid).
+    // Title, author, and progress as three centered lines under the
+    // featured cover — the carousel has plenty of vertical room, unlike
+    // the old grid, which squeezed author + progress onto one line to fit
+    // under 4 rows of tiles.
     const EpubListItem &sel = g_state.epub_list[g_sel_epub];
-    char prog[80] = "";
-    int  off = 0;
+    const int max_chars = max(4, COVER_FEATURED_W / g_rend->get_space_width());
+
+    char title[48];
+    int n = (int)strlen(sel.title);
+    if (n > max_chars) n = max_chars;
+    strncpy(title, sel.title, n);
+    title[n] = '\0';
+    // Not bold: get_space_width() below (used for centering) is always
+    // Font20's width, which would under-measure a bold (Font24) title.
+    g_rend->draw_text(center_x + (COVER_FEATURED_W - (int)strlen(title) * g_rend->get_space_width()) / 2, y, title);
+    y += lh;
+
     if (!sel_author.empty()) {
-        off = snprintf(prog, sizeof(prog), "%s  ", sel_author.c_str());
-        // snprintf returns the length it *would* have written; clamp so a
-        // long author name can't push the offset past the buffer.
-        if (off < 0) off = 0;
-        if (off > (int)sizeof(prog) - 1) off = (int)sizeof(prog) - 1;
+        char author[48];
+        n = (int)sel_author.size();
+        if (n > max_chars) n = max_chars;
+        strncpy(author, sel_author.c_str(), n);
+        author[n] = '\0';
+        g_rend->draw_text(center_x + (COVER_FEATURED_W - (int)strlen(author) * g_rend->get_space_width()) / 2, y, author);
+        y += lh;
     }
+
+    char prog[40];
     if (sel.pages_in_current_section > 0)
-        snprintf(prog + off, sizeof(prog) - off, "Chapter %d  Page %d/%d",
+        snprintf(prog, sizeof(prog), "Chapter %d  Page %d/%d",
                  sel_chapter_num, sel.current_page + 1, sel.pages_in_current_section);
     else
-        snprintf(prog + off, sizeof(prog) - off, "(not yet opened)");
-    g_rend->draw_text(0, g_rend->get_page_height() - lh, prog);
+        snprintf(prog, sizeof(prog), "(not yet opened)");
+    g_rend->draw_text(center_x + (COVER_FEATURED_W - (int)strlen(prog) * g_rend->get_space_width()) / 2, y, prog);
+
     draw_top_strip();
     display.showPage(framebuf, true);
 }
@@ -563,9 +670,7 @@ static void render_menu() {
 
     const char *opts[] = { "Continue Reading", "Go to Library", "Table of Contents", "Settings", "Sleep" };
     for (int i = 0; i < MENU_ITEM_COUNT; i++) {
-        char line[32];
-        snprintf(line, sizeof(line), "%s %s", (i == g_menu_sel) ? ">" : " ", opts[i]);
-        g_rend->draw_text(0, y, line, i == g_menu_sel);
+        draw_row(y, opts[i], i == g_menu_sel);
         y += lh;
     }
     draw_top_strip();
@@ -676,10 +781,21 @@ static void prev_page() {
 // =============================================================================
 
 static void handle_library(Btn b) {
+    // Circular, unlike every other list screen in this app (Menu, Settings,
+    // TOC) — LEFT from the first book wraps to the last, RIGHT from the
+    // last wraps to the first. `num_epubs > 1` guards both the num_epubs==0
+    // case (modulo by zero) and num_epubs==1 (wrapping to itself would just
+    // be a wasted redraw).
     if (b == BTN_LEFT) {
-        if (g_sel_epub > 0) { g_sel_epub--; render_library(); }
+        if (g_state.num_epubs > 1) {
+            g_sel_epub = (g_sel_epub - 1 + g_state.num_epubs) % g_state.num_epubs;
+            render_library();
+        }
     } else if (b == BTN_RIGHT) {
-        if (g_sel_epub < g_state.num_epubs - 1) { g_sel_epub++; render_library(); }
+        if (g_state.num_epubs > 1) {
+            g_sel_epub = (g_sel_epub + 1) % g_state.num_epubs;
+            render_library();
+        }
     } else if (b == BTN_OK) {
         if (g_state.num_epubs == 0) {
             scan_for_epubs();
@@ -716,9 +832,7 @@ static void render_library_menu() {
 
     const char *opts[] = { "File Transfer (Wi-Fi)", "Sleep", "Back" };
     for (int i = 0; i < LIBRARY_MENU_ITEM_COUNT; i++) {
-        char line[32];
-        snprintf(line, sizeof(line), "%s %s", (i == g_library_menu_sel) ? ">" : " ", opts[i]);
-        g_rend->draw_text(0, y, line, i == g_library_menu_sel);
+        draw_row(y, opts[i], i == g_library_menu_sel);
         y += lh;
     }
     draw_top_strip();
@@ -839,10 +953,13 @@ static void handle_menu(Btn b) {
             display.showPage(framebuf, true);
             g_app_state = ST_READER;
         } else if (g_menu_sel == 1) {
-            // Go to Library
+            // Go to Library — deliberately NOT resetting g_sel_epub to 0
+            // here: open_epub() already set it to this book's index when
+            // it was opened, and it hasn't changed since, so leaving it
+            // alone means the carousel lands back on the book you were
+            // just reading instead of jumping to the first one.
             delete g_parser; g_parser = nullptr;
             delete g_epub;   g_epub   = nullptr;
-            g_sel_epub = 0;
             render_library();
             g_app_state = ST_LIBRARY;
         } else if (g_menu_sel == 2) {
@@ -883,26 +1000,22 @@ static void render_settings() {
 
     char line[48];
 
-    snprintf(line, sizeof(line), "%s Sleep Timeout: %lu min",
-             g_settings_sel == 0 ? ">" : " ", g_settings.sleep_timeout_ms / 60000UL);
-    g_rend->draw_text(0, y, line, g_settings_sel == 0);
+    snprintf(line, sizeof(line), "Sleep Timeout: %lu min", g_settings.sleep_timeout_ms / 60000UL);
+    draw_row(y, line, g_settings_sel == 0);
     y += lh;
 
-    snprintf(line, sizeof(line), "%s Font Size: %s",
-             g_settings_sel == 1 ? ">" : " ", g_settings.large_font ? "Large" : "Regular");
-    g_rend->draw_text(0, y, line, g_settings_sel == 1);
+    snprintf(line, sizeof(line), "Font Size: %s", g_settings.large_font ? "Large" : "Regular");
+    draw_row(y, line, g_settings_sel == 1);
     y += lh;
 
     if (g_battery.available())
-        snprintf(line, sizeof(line), "%s Battery: %.3fV  %d%%",
-                 g_settings_sel == 2 ? ">" : " ", g_battery.voltage(), g_battery.percent());
+        snprintf(line, sizeof(line), "Battery: %.3fV  %d%%", g_battery.voltage(), g_battery.percent());
     else
-        snprintf(line, sizeof(line), "%s Battery: unavailable", g_settings_sel == 2 ? ">" : " ");
-    g_rend->draw_text(0, y, line, g_settings_sel == 2);
+        snprintf(line, sizeof(line), "Battery: unavailable");
+    draw_row(y, line, g_settings_sel == 2);
     y += lh;
 
-    snprintf(line, sizeof(line), "%s Back", g_settings_sel == 3 ? ">" : " ");
-    g_rend->draw_text(0, y, line, g_settings_sel == 3);
+    draw_row(y, "Back", g_settings_sel == 3);
 
     draw_top_strip();
     display.showPage(framebuf, true);
@@ -983,20 +1096,37 @@ static void render_toc() {
 
     for (int i = scroll; i < total_items && y + lh <= g_rend->get_page_height() - lh * footer_lines; i++) {
         bool sel = (i == g_toc_sel);
-        char line[64];
 
         if (i == 0) {
-            snprintf(line, sizeof(line), "%s Back", sel ? ">" : " ");
+            draw_row(y, "Back", sel);
         } else {
-            char title[48];
-            const std::string &full = g_epub->get_toc_item(i - 1).title;
-            int n = (int)full.size();
-            if (n > max_chars) n = max_chars;
-            strncpy(title, full.c_str(), n);
+            // Indent by nesting depth (2 spaces/level, clamped so a
+            // pathologically deep TOC can't push every title off-screen)
+            // now that the NCX parser tracks real nesting instead of
+            // flattening everything to level 0.
+            const EpubTocEntry &entry = g_epub->get_toc_item(i - 1);
+            int indent = min(entry.level * 2, 20);
+            int title_budget = max(4, max_chars - indent);
+
+            // title_budget tracks max_chars (screen-width-derived, ~62 on
+            // this panel) which can exceed a smaller fixed buffer — clamp
+            // to the buffer's own capacity too, not just title_budget, so
+            // this can't write past the end of `title` regardless of how
+            // wide the panel/font combination makes max_chars. (This was a
+            // real stack buffer overflow in the pre-existing code here —
+            // title_budget/max_chars could already exceed 47 before this
+            // change, `title[48]` could not.)
+            char title[80];
+            int n = (int)entry.title.size();
+            if (n > title_budget) n = title_budget;
+            if (n > (int)sizeof(title) - 1) n = (int)sizeof(title) - 1;
+            strncpy(title, entry.title.c_str(), n);
             title[n] = '\0';
-            snprintf(line, sizeof(line), "%s %s", sel ? ">" : " ", title);
+
+            char line[104];
+            snprintf(line, sizeof(line), "%*s%s", indent, "", title);
+            draw_row(y, line, sel);
         }
-        g_rend->draw_text(0, y, line, sel);
         y += lh;
     }
 
@@ -1133,7 +1263,8 @@ void loop() {
 
     Btn b = read_button();
     if (b != BTN_NONE) {
-        Serial.printf("Button: %d, state: %d\n", (int)b, (int)g_app_state);
+        Serial.printf("Button: %d, state: %d, free heap: %u (min: %u)\n",
+                      (int)b, (int)g_app_state, ESP.getFreeHeap(), ESP.getMinFreeHeap());
         g_last_activity = millis();
         switch (g_app_state) {
             case ST_LIBRARY:       handle_library(b);       break;

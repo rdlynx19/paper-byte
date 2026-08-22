@@ -16,6 +16,7 @@ public:
     void draw_pixel(int x, int y, uint8_t color) override;
     void draw_bitmap_1bpp(int x, int y, const uint8_t *bitmap, int width, int height) override;
     void draw_text(int x, int y, const char *text, bool bold = false, bool italic = false) override;
+    void draw_text_inverted(int x, int y, const char *text, bool bold = false) override;
     void draw_rect(int x, int y, int width, int height, uint8_t color = 0) override;
     void fill_rect(int x, int y, int width, int height, uint8_t color = 0) override;
     void draw_triangle(int x0, int y0, int x1, int y1, int x2, int y2, uint8_t color) override;

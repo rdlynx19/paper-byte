@@ -1,5 +1,6 @@
 #pragma once
 
+#include "PsramAlloc.h"
 #include "TextBlock.h"
 #include "ImageBlock.h"
 
@@ -7,6 +8,12 @@
 class PageElement
 {
 public:
+  // PSRAM-backed (see PsramAlloc.h) — one of these (PageLine or PageImage,
+  // neither declares its own operator new) exists per line/image on every
+  // page of every chapter.
+  static void *operator new(size_t sz) { return model_alloc(sz); }
+  static void operator delete(void *p) noexcept { free(p); }
+
   int y_pos;
   PageElement(int y_pos) : y_pos(y_pos) {}
   virtual ~PageElement() {}
@@ -52,6 +59,11 @@ public:
 class Page
 {
 public:
+  // PSRAM-backed (see PsramAlloc.h) — one of these exists per page of
+  // every chapter.
+  static void *operator new(size_t sz) { return model_alloc(sz); }
+  static void operator delete(void *p) noexcept { free(p); }
+
   // the list of block index and line numbers on this page
   std::vector<PageElement *> elements;
   void render(Renderer *renderer, Epub *epub)
